@@ -9,7 +9,6 @@ let playerName = '';
 let pollingActive = false;
 let pollingTimeout = null;
 let lastStateHash = '';
-let pollCount = 0;
 
 // DOM Elements
 const loginScreen = document.getElementById('login-screen');
@@ -95,7 +94,6 @@ function joinGame() {
             playerId = data.playerId;
             if (data.gameState) {
                 gameState = data.gameState;
-                lastStateHash = JSON.stringify(gameState);
             }
             showGameScreen();
             addHistory(`🔗 Joined game: ${roomId}`);
@@ -110,13 +108,12 @@ function joinGame() {
 }
 
 // ============================================
-// HTTP POLLING
+// HTTP POLLING - The heart of the game
 // ============================================
 
 function startPolling() {
     if (pollingActive) return;
     pollingActive = true;
-    pollCount = 0;
     pollForUpdates();
 }
 
@@ -134,22 +131,19 @@ function pollForUpdates() {
         return;
     }
 
-    pollCount++;
-
-    // Build URL with query params
-    let url = `/api/poll?roomId=${encodeURIComponent(roomId)}&playerId=${encodeURIComponent(playerId)}`;
+    // Build URL with last state hash
+    let url = `/api/poll/${roomId}/${playerId}`;
     if (lastStateHash) {
-        url += `&lastState=${encodeURIComponent(lastStateHash)}`;
+        url += `?lastState=${encodeURIComponent(lastStateHash)}`;
     }
-    url += `&_=${Date.now()}`;
 
-    console.log(`📡 Poll #${pollCount}: ${url}`);
+    console.log('📡 Polling for updates...');
 
     fetch(url, {
+        // Long polling - server holds connection up to 30s
         signal: AbortSignal.timeout(35000)
     })
         .then(res => {
-            console.log(`📡 Poll response: ${res.status}`);
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status}`);
             }
@@ -158,11 +152,13 @@ function pollForUpdates() {
         .then(data => {
             if (!data.success) {
                 console.warn('Poll error:', data.error);
+                // Continue polling after a delay
                 setTimeout(pollForUpdates, 1000);
                 return;
             }
 
             if (data.gameState) {
+                // Update state if changed
                 const newHash = JSON.stringify(data.gameState);
                 if (newHash !== lastStateHash || data.hasChanges) {
                     lastStateHash = newHash;
@@ -173,18 +169,19 @@ function pollForUpdates() {
                 }
             }
 
+            // Continue polling
             setTimeout(pollForUpdates, 100);
         })
         .catch(err => {
             if (err.name === 'AbortError') {
+                // Timeout - this is normal for long polling
                 console.log('⏱️ Poll timeout, retrying...');
                 setTimeout(pollForUpdates, 100);
             } else {
                 console.error('❌ Poll error:', err);
+                // Wait and retry on error
                 setTimeout(pollForUpdates, 2000);
-                if (pollCount > 5) {
-                    showToast('⚠️ Connection issue, retrying...');
-                }
+                showToast('⚠️ Connection issue, retrying...');
             }
         });
 }
@@ -192,7 +189,7 @@ function pollForUpdates() {
 function fetchGameState() {
     if (!roomId || !playerId) return;
 
-    fetch(`/api/state?roomId=${encodeURIComponent(roomId)}&playerId=${encodeURIComponent(playerId)}`)
+    fetch(`/api/state/${roomId}/${playerId}`)
         .then(res => res.json())
         .then(data => {
             if (data.success) {
@@ -345,20 +342,22 @@ function selectSquare(index) {
         return;
     }
 
+    // Disable button temporarily to prevent double clicks
     const squareElements = document.querySelectorAll('.square');
     squareElements.forEach(el => {
         el.style.pointerEvents = 'none';
     });
 
-    fetch('/api/select-square', {
+    fetch(`/api/select-square/${roomId}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ roomId, playerId, squareIndex: index })
+        body: JSON.stringify({ playerId, squareIndex: index })
     })
         .then(res => res.json())
         .then(data => {
+            // Re-enable clicks
             squareElements.forEach(el => {
                 el.style.pointerEvents = '';
             });
@@ -395,12 +394,12 @@ function skipDare() {
         return;
     }
 
-    fetch('/api/skip-dare', {
+    fetch(`/api/skip-dare/${roomId}`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ roomId, playerId })
+        body: JSON.stringify({ playerId })
     })
         .then(res => res.json())
         .then(data => {
@@ -501,6 +500,7 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Auto-join from URL
 (function autoJoinFromURL() {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -513,6 +513,7 @@ document.addEventListener('keydown', (e) => {
     }
 })();
 
+// Clean up polling on page unload
 window.addEventListener('beforeunload', () => {
     stopPolling();
 });

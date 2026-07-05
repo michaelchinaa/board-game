@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>🔥 LDR Spicy Game - Pick & Play</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="style.css" />
     <link
       rel="icon"
       type="image/svg+xml"
@@ -12,7 +12,138 @@
     />
   </head>
   <body>
-    <!-- Your HTML content -->
-    <script src="/app.js"></script>
+    <div id="app">
+      <!-- Login Screen -->
+      <div id="login-screen">
+        <div class="login-container">
+          <div class="logo">🔥</div>
+          <h1>LDR Spicy Game</h1>
+          <p class="subtitle">Pick a square, reveal the dare! ❤️</p>
+          <p class="subtitle" style="font-size: 0.8rem; opacity: 0.6">
+            For couples who miss each other • Consent first
+          </p>
+
+          <div class="login-options">
+            <div class="option">
+              <h3>📝 Create Game</h3>
+              <input
+                type="text"
+                id="create-name"
+                placeholder="Your name"
+                maxlength="20"
+              />
+              <button onclick="createGame()">Create Room 🎲</button>
+            </div>
+
+            <div class="divider">— OR —</div>
+
+            <div class="option">
+              <h3>🔗 Join Game</h3>
+              <input
+                type="text"
+                id="join-name"
+                placeholder="Your name"
+                maxlength="20"
+              />
+              <input
+                type="text"
+                id="join-room"
+                placeholder="Room code (e.g., ABC123)"
+                maxlength="6"
+                style="text-transform: uppercase"
+              />
+              <button onclick="joinGame()">Join Room 🚀</button>
+            </div>
+          </div>
+
+          <div class="footer">
+            <p>💡 Share the room code with your partner</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Game Screen -->
+      <div id="game-screen" style="display: none">
+        <div class="game-header">
+          <div class="header-left">
+            <div class="room-info">🏠 Room: <span id="room-id"></span></div>
+            <div class="turn-info">
+              🎯 Turn: <span id="turn-name">Waiting...</span>
+            </div>
+          </div>
+          <div class="header-right">
+            <div class="round-info">
+              📦 Used: <span id="used-squares">0</span>/<span id="total-squares"
+                >36</span
+              >
+            </div>
+            <div class="status-info" id="status-info">
+              ⏳ Waiting for players...
+            </div>
+          </div>
+        </div>
+
+        <div class="game-body">
+          <!-- Board - Left Side -->
+          <div class="board-container">
+            <div id="board"></div>
+          </div>
+
+          <!-- Right Panel - Square Details -->
+          <div class="right-panel">
+            <!-- Player Info -->
+            <div class="players-info">
+              <div class="player-card" id="player1-card">
+                <div class="player-avatar">🔴</div>
+                <div class="player-name">Player 1</div>
+                <div class="player-squares">📦 Picked: 0</div>
+                <div class="player-dares">✅ Dares: 0</div>
+              </div>
+              <div class="player-card" id="player2-card">
+                <div class="player-avatar">🔵</div>
+                <div class="player-name">Player 2</div>
+                <div class="player-squares">📦 Picked: 0</div>
+                <div class="player-dares">✅ Dares: 0</div>
+              </div>
+            </div>
+
+            <!-- Square Details Display -->
+            <div class="square-details">
+              <div class="details-header">
+                <h3>📋 Dare Revealed</h3>
+                <span id="square-number">#1</span>
+              </div>
+              <div class="details-content" id="square-details-content">
+                <div class="empty-state">
+                  <span style="font-size: 3rem">👆</span>
+                  <p>Click any square on the board</p>
+                  <p style="font-size: 0.8rem; opacity: 0.5">
+                    The dare will appear here
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="action-buttons">
+              <button id="skip-btn" onclick="skipDare()" disabled>
+                ⏭️ Skip Dare
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- History -->
+        <div class="game-history">
+          <div class="history-header">
+            <h4>📜 Game History</h4>
+            <span id="history-count">0 events</span>
+          </div>
+          <div id="history-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
   </body>
 </html>
