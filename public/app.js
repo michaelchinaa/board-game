@@ -141,16 +141,15 @@ function pollForUpdates() {
     if (lastStateHash) {
         url += `&lastState=${encodeURIComponent(lastStateHash)}`;
     }
-
-    // Add cache busting
     url += `&_=${Date.now()}`;
 
-    console.log(`📡 Poll #${pollCount}...`);
+    console.log(`📡 Poll #${pollCount}: ${url}`);
 
     fetch(url, {
         signal: AbortSignal.timeout(35000)
     })
         .then(res => {
+            console.log(`📡 Poll response: ${res.status}`);
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status}`);
             }
@@ -174,7 +173,6 @@ function pollForUpdates() {
                 }
             }
 
-            // Continue polling immediately
             setTimeout(pollForUpdates, 100);
         })
         .catch(err => {
@@ -184,7 +182,7 @@ function pollForUpdates() {
             } else {
                 console.error('❌ Poll error:', err);
                 setTimeout(pollForUpdates, 2000);
-                if (pollCount > 3) {
+                if (pollCount > 5) {
                     showToast('⚠️ Connection issue, retrying...');
                 }
             }
@@ -347,7 +345,6 @@ function selectSquare(index) {
         return;
     }
 
-    // Disable clicks temporarily
     const squareElements = document.querySelectorAll('.square');
     squareElements.forEach(el => {
         el.style.pointerEvents = 'none';

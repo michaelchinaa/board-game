@@ -10,12 +10,18 @@ const app = express();
 
 app.use(cors({
  origin: "*",
- methods: ["GET", "POST"],
+ methods: ["GET", "POST", "OPTIONS"],
  credentials: true
 }));
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
+
+// Log all requests for debugging
+app.use((req, res, next) => {
+ console.log(`${req.method} ${req.path}`);
+ next();
+});
 
 // Load dares
 const daresPath = path.join(__dirname, '../dares.json');
@@ -116,8 +122,10 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  }
 });
 
-// POLL endpoint - GET with query params (this works better on Vercel)
+// POLL endpoint - GET with query params
 app.get('/api/poll', (req, res) => {
+ console.log('📡 Poll endpoint hit!');
+
  try {
   const roomId = req.query.roomId?.toUpperCase();
   const playerId = req.query.playerId;
@@ -126,16 +134,19 @@ app.get('/api/poll', (req, res) => {
   console.log(`📡 Poll: room=${roomId}, player=${playerId}`);
 
   if (!roomId || !playerId) {
+   console.log('❌ Missing roomId or playerId');
    return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
   }
 
   const game = games[roomId];
   if (!game) {
+   console.log(`❌ Game not found: ${roomId}`);
    return res.status(404).json({ success: false, error: 'Game not found' });
   }
 
   const player = game.players[playerId];
   if (!player) {
+   console.log(`❌ Player not found: ${playerId}`);
    return res.status(404).json({ success: false, error: 'Player not found' });
   }
 
@@ -157,7 +168,7 @@ app.get('/api/poll', (req, res) => {
   if (stateHash === lastState) {
    // Wait up to 30 seconds for changes
    const timeout = setTimeout(() => {
-    // Send current state (no changes)
+    console.log(`⏱️ Poll timeout for ${playerId}`);
     res.json({
      success: true,
      gameState: currentState,
@@ -176,6 +187,7 @@ app.get('/api/poll', (req, res) => {
   }
 
   // State changed, send immediately
+  console.log(`✅ State changed for ${playerId}, sending update`);
   res.json({
    success: true,
    gameState: currentState,
@@ -191,9 +203,13 @@ app.get('/api/poll', (req, res) => {
 
 // Select square
 app.post('/api/select-square', (req, res) => {
+ console.log('🎯 Select square endpoint hit');
+
  try {
   const { roomId, playerId, squareIndex } = req.body;
   const room = roomId.toUpperCase();
+
+  console.log(`🎯 Select square: room=${room}, player=${playerId}, square=${squareIndex}`);
 
   const game = games[room];
   if (!game) {
@@ -245,6 +261,8 @@ app.post('/api/select-square', (req, res) => {
 
 // Skip dare
 app.post('/api/skip-dare', (req, res) => {
+ console.log('⏭️ Skip dare endpoint hit');
+
  try {
   const { roomId, playerId } = req.body;
   const room = roomId.toUpperCase();
@@ -295,6 +313,8 @@ app.post('/api/skip-dare', (req, res) => {
 
 // Get game state
 app.get('/api/state', (req, res) => {
+ console.log('📊 State endpoint hit');
+
  try {
   const roomId = req.query.roomId?.toUpperCase();
   const playerId = req.query.playerId;
@@ -324,6 +344,17 @@ app.get('/api/state', (req, res) => {
   console.error('Error getting state:', error);
   res.status(500).json({ success: false, error: error.message });
  }
+});
+
+// Root route - serve index.html
+app.get('/', (req, res) => {
+ res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// Catch all - log 404s
+app.use((req, res) => {
+ console.log(`404: ${req.method} ${req.path}`);
+ res.status(404).json({ success: false, error: 'Not found' });
 });
 
 // Cleanup inactive games
