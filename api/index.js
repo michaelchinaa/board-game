@@ -32,7 +32,7 @@ try {
 
 // Store games in memory
 const games = {};
-const gamePolling = {}; // Track last poll time per game
+const gamePolling = {};
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -60,8 +60,7 @@ app.get('/api/create-game/:playerName', (req, res) => {
    success: true,
    roomId,
    playerId,
-   playerName,
-   message: `Game created! Share room code: ${roomId}`
+   playerName
   });
  } catch (error) {
   console.error('Error creating game:', error);
@@ -109,8 +108,7 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
    roomId,
    playerId,
    playerName,
-   gameState: game.getGameState(),
-   message: `Joined game: ${roomId}`
+   gameState: game.getGameState()
   });
  } catch (error) {
   console.error('Error joining game:', error);
@@ -118,12 +116,18 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  }
 });
 
-// Poll for game state (LONG POLLING)
-app.get('/api/poll/:roomId/:playerId', (req, res) => {
+// POLL endpoint - GET with query params (this works better on Vercel)
+app.get('/api/poll', (req, res) => {
  try {
-  const roomId = req.params.roomId.toUpperCase();
-  const playerId = req.params.playerId;
-  const lastState = req.query.lastState || '0';
+  const roomId = req.query.roomId?.toUpperCase();
+  const playerId = req.query.playerId;
+  const lastState = req.query.lastState || '';
+
+  console.log(`📡 Poll: room=${roomId}, player=${playerId}`);
+
+  if (!roomId || !playerId) {
+   return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
+  }
 
   const game = games[roomId];
   if (!game) {
@@ -162,7 +166,7 @@ app.get('/api/poll/:roomId/:playerId', (req, res) => {
     });
    }, 30000);
 
-   // Store the response object for later
+   // Store the response for later
    if (!gamePolling[roomId].pendingResponses) {
     gamePolling[roomId].pendingResponses = {};
    }
@@ -186,12 +190,12 @@ app.get('/api/poll/:roomId/:playerId', (req, res) => {
 });
 
 // Select square
-app.post('/api/select-square/:roomId', (req, res) => {
+app.post('/api/select-square', (req, res) => {
  try {
-  const roomId = req.params.roomId.toUpperCase();
-  const { playerId, squareIndex } = req.body;
+  const { roomId, playerId, squareIndex } = req.body;
+  const room = roomId.toUpperCase();
 
-  const game = games[roomId];
+  const game = games[room];
   if (!game) {
    return res.status(404).json({ success: false, error: 'Game not found' });
   }
@@ -203,8 +207,8 @@ app.post('/api/select-square/:roomId', (req, res) => {
   }
 
   // Resolve any pending polls for this room
-  if (gamePolling[roomId] && gamePolling[roomId].pendingResponses) {
-   const pending = gamePolling[roomId].pendingResponses;
+  if (gamePolling[room] && gamePolling[room].pendingResponses) {
+   const pending = gamePolling[room].pendingResponses;
    Object.keys(pending).forEach(pid => {
     const { res: pendingRes, timeout } = pending[pid];
     if (pendingRes && !pendingRes.headersSent) {
@@ -240,12 +244,12 @@ app.post('/api/select-square/:roomId', (req, res) => {
 });
 
 // Skip dare
-app.post('/api/skip-dare/:roomId', (req, res) => {
+app.post('/api/skip-dare', (req, res) => {
  try {
-  const roomId = req.params.roomId.toUpperCase();
-  const { playerId } = req.body;
+  const { roomId, playerId } = req.body;
+  const room = roomId.toUpperCase();
 
-  const game = games[roomId];
+  const game = games[room];
   if (!game) {
    return res.status(404).json({ success: false, error: 'Game not found' });
   }
@@ -261,8 +265,8 @@ app.post('/api/skip-dare/:roomId', (req, res) => {
   game.currentDare = null;
 
   // Resolve any pending polls
-  if (gamePolling[roomId] && gamePolling[roomId].pendingResponses) {
-   const pending = gamePolling[roomId].pendingResponses;
+  if (gamePolling[room] && gamePolling[room].pendingResponses) {
+   const pending = gamePolling[room].pendingResponses;
    Object.keys(pending).forEach(pid => {
     const { res: pendingRes, timeout } = pending[pid];
     if (pendingRes && !pendingRes.headersSent) {
@@ -289,11 +293,15 @@ app.post('/api/skip-dare/:roomId', (req, res) => {
  }
 });
 
-// Get game state (fallback)
-app.get('/api/state/:roomId/:playerId', (req, res) => {
+// Get game state
+app.get('/api/state', (req, res) => {
  try {
-  const roomId = req.params.roomId.toUpperCase();
-  const playerId = req.params.playerId;
+  const roomId = req.query.roomId?.toUpperCase();
+  const playerId = req.query.playerId;
+
+  if (!roomId || !playerId) {
+   return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
+  }
 
   const game = games[roomId];
   if (!game) {
@@ -318,13 +326,12 @@ app.get('/api/state/:roomId/:playerId', (req, res) => {
  }
 });
 
-// Cleanup inactive games (runs every 5 minutes)
+// Cleanup inactive games
 setInterval(() => {
  const now = Date.now();
  Object.keys(gamePolling).forEach(roomId => {
   const polling = gamePolling[roomId];
-  if (polling && (now - polling.lastPoll) > 300000) { // 5 minutes
-   // Clean up pending responses
+  if (polling && (now - polling.lastPoll) > 300000) {
    if (polling.pendingResponses) {
     Object.keys(polling.pendingResponses).forEach(pid => {
      const { res, timeout } = polling.pendingResponses[pid];
