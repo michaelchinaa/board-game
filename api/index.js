@@ -11,7 +11,7 @@ const SpicyLDRGame = require('../gamelogic');
 const app = express();
 const server = createServer(app);
 
-// Socket.IO with Vercel-compatible settings
+// Important: Socket.IO must be attached to the server BEFORE any routes
 const io = new Server(server, {
  cors: {
   origin: "*",
@@ -24,10 +24,9 @@ const io = new Server(server, {
  pingInterval: 25000,
  cookie: false,
  path: '/socket.io',
- // Key fix for Vercel
+ // Fix for Vercel
  allowUpgrades: true,
  upgrade: true,
- // Add these
  perMessageDeflate: false,
  httpCompression: false
 });
@@ -35,16 +34,6 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
-
-// Health check
-app.get('/api/health', (req, res) => {
- res.json({
-  status: 'OK',
-  games: Object.keys(games).length,
-  connections: Object.keys(playerSessions).length,
-  uptime: process.uptime()
- });
-});
 
 // Load dares
 const daresPath = path.join(__dirname, '../dares.json');
@@ -61,6 +50,15 @@ try {
 
 const games = {};
 const playerSessions = {};
+
+// Health check
+app.get('/api/health', (req, res) => {
+ res.json({
+  status: 'OK',
+  games: Object.keys(games).length,
+  connections: Object.keys(playerSessions).length
+ });
+});
 
 // API Routes
 app.get('/api/create-game/:playerName', (req, res) => {
@@ -127,7 +125,6 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
 io.on('connection', (socket) => {
  console.log(`🔌 Client connected: ${socket.id}`);
 
- // Send connection confirmation
  socket.emit('connected', {
   message: 'Connected to server!',
   socketId: socket.id
@@ -150,14 +147,6 @@ io.on('connection', (socket) => {
    return;
   }
 
-  // Leave any previous rooms
-  const rooms = Array.from(socket.rooms);
-  rooms.forEach(r => {
-   if (r !== socket.id) {
-    socket.leave(r);
-   }
-  });
-
   socket.join(room);
   socket.data.roomId = room;
   socket.data.playerId = playerId;
@@ -167,10 +156,7 @@ io.on('connection', (socket) => {
 
   console.log(`✅ ${player.name} joined room ${room}`);
 
-  // Send current game state
   socket.emit('game-state', game.getGameState());
-
-  // Broadcast to room
   io.to(room).emit('game-state', game.getGameState());
 
   socket.to(room).emit('player-joined', {
@@ -179,7 +165,6 @@ io.on('connection', (socket) => {
    message: `${player.name} has joined!`
   });
 
-  // Check if both players are ready
   const playerIds = Object.keys(game.players);
   if (playerIds.length === 2) {
    console.log(`🎮 Room ${room} has both players!`);

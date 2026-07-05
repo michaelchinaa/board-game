@@ -129,10 +129,11 @@ function initializeSocket() {
         path: '/socket.io'
     });
 
+    // Log connection attempts
     socket.on('connect', () => {
         console.log('✅ Connected to server!');
+        console.log('Socket ID:', socket.id);
         showToast('✅ Connected to server!');
-        // Re-join room if we have roomId and playerId
         if (roomId && playerId) {
             socket.emit('join-room', { roomId, playerId });
         }
@@ -140,6 +141,7 @@ function initializeSocket() {
 
     socket.on('connect_error', (error) => {
         console.error('❌ Connection error:', error);
+        console.log('Attempting to reconnect...');
         showToast('⏳ Reconnecting...');
     });
 
@@ -151,12 +153,29 @@ function initializeSocket() {
         showToast('⚠️ Disconnected. Reconnecting...');
     });
 
-    socket.on('reconnect', () => {
-        console.log('🔄 Reconnected!');
+    socket.on('reconnect', (attempt) => {
+        console.log(`🔄 Reconnected after ${attempt} attempts`);
         showToast('✅ Reconnected!');
         if (roomId && playerId) {
             socket.emit('join-room', { roomId, playerId });
         }
+    });
+
+    socket.on('reconnect_attempt', (attempt) => {
+        console.log(`🔄 Reconnection attempt ${attempt}`);
+    });
+
+    socket.on('reconnect_error', (error) => {
+        console.error('❌ Reconnection error:', error);
+    });
+
+    socket.on('reconnect_failed', () => {
+        console.error('❌ Reconnection failed');
+        showToast('❌ Could not reconnect. Please refresh the page.');
+    });
+
+    socket.on('connected', (data) => {
+        console.log('📨 Server confirmed connection:', data);
     });
 }
 
