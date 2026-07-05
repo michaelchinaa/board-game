@@ -11,27 +11,36 @@ const SpicyLDRGame = require('../gamelogic');
 const app = express();
 const server = createServer(app);
 
-// Important: Socket.IO must be attached to the server BEFORE any routes
+// Socket.IO with Vercel compatible settings
 const io = new Server(server, {
  cors: {
   origin: "*",
   methods: ["GET", "POST"],
   credentials: true
  },
- transports: ['polling', 'websocket'],
+ // Use ONLY polling for Vercel
+ transports: ['polling'],
  allowEIO3: true,
  pingTimeout: 60000,
  pingInterval: 25000,
  cookie: false,
  path: '/socket.io',
- // Fix for Vercel
- allowUpgrades: true,
- upgrade: true,
+ allowUpgrades: false,
+ upgrade: false,
  perMessageDeflate: false,
- httpCompression: false
+ httpCompression: false,
+ // Add this to fix Vercel
+ serveClient: false,
+ // Add this for better compatibility
+ allowEIO3: true
 });
 
-app.use(cors());
+app.use(cors({
+ origin: "*",
+ methods: ["GET", "POST"],
+ credentials: true
+}));
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
@@ -146,6 +155,14 @@ io.on('connection', (socket) => {
    socket.emit('error', 'Player not found');
    return;
   }
+
+  // Leave any previous rooms
+  const rooms = Array.from(socket.rooms);
+  rooms.forEach(r => {
+   if (r !== socket.id) {
+    socket.leave(r);
+   }
+  });
 
   socket.join(room);
   socket.data.roomId = room;

@@ -7,6 +7,8 @@ let gameState = null;
 let playerId = null;
 let roomId = null;
 let playerName = '';
+let reconnectAttempts = 0;
+let reconnectTimer = null;
 
 // DOM Elements
 const loginScreen = document.getElementById('login-screen');
@@ -101,7 +103,7 @@ function joinGame() {
 }
 
 // ============================================
-// SOCKET.IO CONNECTION
+// SOCKET.IO CONNECTION - Fixed for Vercel
 // ============================================
 
 function initializeSocket() {
@@ -110,15 +112,18 @@ function initializeSocket() {
         socket = null;
     }
 
-    // Get the current host
-    const host = window.location.host;
-    const protocol = window.location.protocol;
+    // Clear any reconnect timer
+    if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+    }
 
-    // Connect with proper configuration
+    reconnectAttempts = 0;
+
+    // Connect with polling only for Vercel
     socket = io({
-        transports: ['polling', 'websocket'],
-        upgrade: true,
-        rememberUpgrade: true,
+        transports: ['polling'],
+        upgrade: false,
         reconnection: true,
         reconnectionAttempts: 20,
         reconnectionDelay: 1000,
@@ -126,13 +131,18 @@ function initializeSocket() {
         timeout: 60000,
         autoConnect: true,
         forceNew: true,
-        path: '/socket.io'
+        path: '/socket.io',
+        // Add extra options for Vercel
+        withCredentials: false,
+        extraHeaders: {
+            'Cache-Control': 'no-cache'
+        }
     });
 
-    // Log connection attempts
     socket.on('connect', () => {
         console.log('✅ Connected to server!');
         console.log('Socket ID:', socket.id);
+        reconnectAttempts = 0;
         showToast('✅ Connected to server!');
         if (roomId && playerId) {
             socket.emit('join-room', { roomId, playerId });
@@ -141,14 +151,23 @@ function initializeSocket() {
 
     socket.on('connect_error', (error) => {
         console.error('❌ Connection error:', error);
-        console.log('Attempting to reconnect...');
-        showToast('⏳ Reconnecting...');
+        reconnectAttempts++;
+        console.log(`Reconnection attempt ${reconnectAttempts}`);
+
+        if (reconnectAttempts < 5) {
+            showToast(`⏳ Reconnecting... (${reconnectAttempts}/20)`);
+        } else {
+            showToast('⚠️ Having trouble connecting. Retrying...');
+        }
     });
 
     socket.on('disconnect', (reason) => {
         console.log('🔌 Disconnected:', reason);
         if (reason === 'io server disconnect') {
-            socket.connect();
+            // Server disconnected us, try to reconnect
+            setTimeout(() => {
+                socket.connect();
+            }, 1000);
         }
         showToast('⚠️ Disconnected. Reconnecting...');
     });
@@ -177,6 +196,75 @@ function initializeSocket() {
     socket.on('connected', (data) => {
         console.log('📨 Server confirmed connection:', data);
     });
+
+    socket.on('game-state', (state) => {
+        console.log('📊 Game state updated');
+        console.log('Status:', state.status);
+        console.log('Current turn:', state.currentTurnName);
+        console.log('Used squares:', state.usedSquares);
+        gameState = state;
+        renderBoard();
+        updateUI();
+    });
+
+    socket.on('player-joined', (data) => {
+        addHistory(`👋 ${data.message}`);
+        showToast(`👋 ${data.playerName} joined!`);
+        statusInfo.textContent = '🎉 Partner joined! Starting game...';
+    });
+
+    socket.on('game-ready', (data) => {
+        addHistory(`🎉 ${data.message}`);
+        showToast(`🎉 ${data.message}`);
+        statusInfo.textContent = '🎯 Click any square to start!';
+        setTimeout(() => {
+            renderBoard();
+        }, 100);
+    });
+
+    socket.on('player-disconnected', (data) => {
+        addHistory(`⚠️ ${data.message}`);
+        showToast(`⚠️ ${data.message}`);
+        statusInfo.textContent = '⏳ Waiting for player...';
+        renderBoard();
+    });
+
+    socket.on('square-selected', (data) => {
+        console.log('📍 Square selected:', data);
+        addHistory(`📍 ${data.playerName} picked square ${data.squareIndex + 1}`);
+        showToast(`📍 ${data.playerName} picked a square!`);
+        displaySquareDetails(data.squareIndex, data.dare, data.playerName);
+        usedSquaresDisplay.textContent = gameState?.usedSquares?.length || 0;
+    });
+
+    socket.on('dare-skipped', (data) => {
+        addHistory(`⏭️ ${data.message}`);
+        showToast(`⏭️ ${data.message}`);
+        squareDetailsContent.innerHTML = `
+      <div class="empty-state">
+        <div class="big-icon">⏭️</div>
+        <p>Dare was skipped</p>
+        <p class="sub-text">Click a new square</p>
+      </div>
+    `;
+        squareNumberDisplay.textContent = '—';
+    });
+
+    socket.on('game-finished', (data) => {
+        addHistory(`🏆 ${data.message}`);
+        showToast(`🏆 ${data.message}`);
+        statusInfo.textContent = '🏆 Game Finished! Great job! 🎉';
+        skipBtn.disabled = true;
+        renderBoard();
+    });
+
+    socket.on('error', (message) => {
+        console.error('❌ Server error:', message);
+        showToast('❌ ' + message);
+    });
+
+    // Start connection
+    socket.connect();
 }
 
 // ============================================
@@ -224,7 +312,7 @@ function updateUI() {
 }
 
 // ============================================
-// BOARD RENDERER - No Icons, All Identical
+// BOARD RENDERER
 // ============================================
 
 function renderBoard() {
@@ -249,13 +337,11 @@ function renderBoard() {
             square.classList.add('used');
         }
 
-        // Only show the square number - no icons, no categories
         const number = document.createElement('span');
         number.className = 'square-number';
         number.textContent = i + 1;
         square.appendChild(number);
 
-        // Mysterious question mark for unused squares
         if (!isUsed) {
             const mystery = document.createElement('span');
             mystery.className = 'mystery-icon';
@@ -292,11 +378,11 @@ function displaySquareDetails(squareIndex, dare, playerName) {
     squareNumberDisplay.textContent = `#${squareIndex + 1}`;
 
     squareDetailsContent.innerHTML = `
-        <div class="dare-display">
-            <div class="dare-text">${dare.text}</div>
-            <div class="dare-player">👤 Selected by: ${playerName}</div>
-        </div>
-    `;
+    <div class="dare-display">
+      <div class="dare-text">${dare.text}</div>
+      <div class="dare-player">👤 Selected by: ${playerName}</div>
+    </div>
+  `;
 
     skipBtn.disabled = false;
     gameState.currentDare = dare;
@@ -351,23 +437,23 @@ function showToast(message) {
     toast.className = 'toast';
     toast.textContent = message;
     toast.style.cssText = `
-        position: fixed;
-        bottom: 30px;
-        left: 50%;
-        transform: translateX(-50%);
-        background: rgba(0,0,0,0.9);
-        color: #fff;
-        padding: 12px 24px;
-        border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.1);
-        font-size: 0.95rem;
-        z-index: 9999;
-        animation: fadeIn 0.3s ease-out;
-        max-width: 90%;
-        text-align: center;
-        backdrop-filter: blur(10px);
-        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-    `;
+    position: fixed;
+    bottom: 30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.9);
+    color: #fff;
+    padding: 12px 24px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.1);
+    font-size: 0.95rem;
+    z-index: 9999;
+    animation: fadeIn 0.3s ease-out;
+    max-width: 90%;
+    text-align: center;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  `;
     document.body.appendChild(toast);
 
     setTimeout(() => {
