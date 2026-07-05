@@ -15,13 +15,10 @@ app.use(cors({
 }));
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
 
-// Log all requests for debugging
-app.use((req, res, next) => {
- console.log(`${req.method} ${req.path}`);
- next();
-});
+// Serve static files
+const publicPath = path.join(__dirname, '../public');
+app.use(express.static(publicPath));
 
 // Load dares
 const daresPath = path.join(__dirname, '../dares.json');
@@ -36,11 +33,13 @@ try {
  console.error('Error loading dares:', error);
 }
 
-// Store games in memory
 const games = {};
 const gamePolling = {};
 
-// Health check
+// ============================================
+// API ROUTES
+// ============================================
+
 app.get('/api/health', (req, res) => {
  res.json({
   status: 'OK',
@@ -49,7 +48,6 @@ app.get('/api/health', (req, res) => {
  });
 });
 
-// Create game
 app.get('/api/create-game/:playerName', (req, res) => {
  try {
   const roomId = uuidv4().substring(0, 6).toUpperCase();
@@ -58,7 +56,7 @@ app.get('/api/create-game/:playerName', (req, res) => {
 
   const game = new SpicyLDRGame(roomId, playerId, playerName);
   games[roomId] = game;
-  gamePolling[roomId] = { lastPoll: Date.now(), clients: {} };
+  gamePolling[roomId] = { lastPoll: Date.now(), clients: {}, pendingResponses: {} };
 
   console.log(`✅ Game created: ${roomId} by ${playerName}`);
 
@@ -74,7 +72,6 @@ app.get('/api/create-game/:playerName', (req, res) => {
  }
 });
 
-// Join game
 app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  try {
   const roomId = req.params.roomId.toUpperCase();
@@ -98,7 +95,6 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
 
   console.log(`✅ Player ${playerName} joined room ${roomId}`);
 
-  // Check if both players are ready
   const playerIds = Object.keys(game.players);
   if (playerIds.length === 2) {
    playerIds.forEach(id => {
@@ -122,53 +118,43 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  }
 });
 
-// POLL endpoint - GET with query params
+// POLL endpoint - LONG POLLING
 app.get('/api/poll', (req, res) => {
- console.log('📡 Poll endpoint hit!');
-
  try {
   const roomId = req.query.roomId?.toUpperCase();
   const playerId = req.query.playerId;
   const lastState = req.query.lastState || '';
 
-  console.log(`📡 Poll: room=${roomId}, player=${playerId}`);
-
   if (!roomId || !playerId) {
-   console.log('❌ Missing roomId or playerId');
    return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
   }
 
   const game = games[roomId];
   if (!game) {
-   console.log(`❌ Game not found: ${roomId}`);
    return res.status(404).json({ success: false, error: 'Game not found' });
   }
 
   const player = game.players[playerId];
   if (!player) {
-   console.log(`❌ Player not found: ${playerId}`);
    return res.status(404).json({ success: false, error: 'Player not found' });
   }
 
-  // Mark player as connected
   player.isConnected = true;
 
-  // Update polling tracking
   if (!gamePolling[roomId]) {
-   gamePolling[roomId] = { lastPoll: Date.now(), clients: {} };
+   gamePolling[roomId] = { lastPoll: Date.now(), clients: {}, pendingResponses: {} };
   }
   gamePolling[roomId].clients[playerId] = Date.now();
   gamePolling[roomId].lastPoll = Date.now();
 
-  // Get current game state
   const currentState = game.getGameState();
   const stateHash = JSON.stringify(currentState);
 
-  // If state hasn't changed, hold the connection (long polling)
+  console.log(`📡 Poll from ${player.name}, currentDare:`, currentState.currentDare?.text || 'none');
+
+  // If state hasn't changed, hold the connection
   if (stateHash === lastState) {
-   // Wait up to 30 seconds for changes
    const timeout = setTimeout(() => {
-    console.log(`⏱️ Poll timeout for ${playerId}`);
     res.json({
      success: true,
      gameState: currentState,
@@ -177,17 +163,13 @@ app.get('/api/poll', (req, res) => {
     });
    }, 30000);
 
-   // Store the response for later
-   if (!gamePolling[roomId].pendingResponses) {
-    gamePolling[roomId].pendingResponses = {};
-   }
    gamePolling[roomId].pendingResponses[playerId] = { res, timeout };
-
    return;
   }
 
-  // State changed, send immediately
-  console.log(`✅ State changed for ${playerId}, sending update`);
+  // State changed - send the full state with currentDare
+  console.log(`📤 Sending updated state to ${player.name}, dare:`, currentState.currentDare?.text);
+
   res.json({
    success: true,
    gameState: currentState,
@@ -201,11 +183,49 @@ app.get('/api/poll', (req, res) => {
  }
 });
 
-// Select square
+// Get game state
+app.get('/api/state', (req, res) => {
+ try {
+  const roomId = req.query.roomId?.toUpperCase();
+  const playerId = req.query.playerId;
+
+  if (!roomId || !playerId) {
+   return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
+  }
+
+  const game = games[roomId];
+  if (!game) {
+   return res.status(404).json({ success: false, error: 'Game not found' });
+  }
+
+  const player = game.players[playerId];
+  if (!player) {
+   return res.status(404).json({ success: false, error: 'Player not found' });
+  }
+
+  player.isConnected = true;
+
+  const gameState = game.getGameState();
+  console.log(`📊 State requested by ${player.name}, currentDare:`, gameState.currentDare?.text || 'none');
+
+  res.json({
+   success: true,
+   gameState: gameState
+  });
+
+ } catch (error) {
+  console.error('Error getting state:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
+});
+
+// Select square - BROADCAST to ALL players
 app.post('/api/select-square', (req, res) => {
  try {
   const { roomId, playerId, squareIndex } = req.body;
   const room = roomId.toUpperCase();
+
+  console.log(`🎯 Select square: room=${room}, player=${playerId}, square=${squareIndex}`);
 
   const game = games[room];
   if (!game) {
@@ -218,23 +238,22 @@ app.post('/api/select-square', (req, res) => {
    return res.status(400).json({ success: false, error: result.error });
   }
 
-  // Get the updated game state
+  // Get the updated game state (includes currentDare)
   const gameState = game.getGameState();
 
-  // Log what we're sending back
-  console.log('📤 Sending square selection response:', {
-   squareIndex: result.squareIndex,
-   dareId: result.dare?.id,
-   dareText: result.dare?.text
-  });
+  console.log(`📤 Square selected! Dare:`, gameState.currentDare?.text || 'NONE');
 
-  // Resolve pending polls
+  // BROADCAST to ALL pending polls - this is the key!
   if (gamePolling[room] && gamePolling[room].pendingResponses) {
    const pending = gamePolling[room].pendingResponses;
+   const pendingCount = Object.keys(pending).length;
+   console.log(`📤 Broadcasting to ${pendingCount} pending polls`);
+
    Object.keys(pending).forEach(pid => {
     const { res: pendingRes, timeout } = pending[pid];
     if (pendingRes && !pendingRes.headersSent) {
      clearTimeout(timeout);
+     console.log(`📤 Sending to player ${pid}`);
      pendingRes.json({
       success: true,
       gameState: gameState,
@@ -251,11 +270,14 @@ app.post('/api/select-square', (req, res) => {
    game.status = 'FINISHED';
   }
 
+  // Send response to the player who selected
   res.json({
    success: true,
    result: {
     squareIndex: result.squareIndex,
-    dare: result.dare,  // This must be included!
+    dare: result.dare,
+    playerId: result.playerId,
+    playerName: result.playerName,
     remaining: result.remaining
    },
    gameState: gameState,
@@ -268,11 +290,7 @@ app.post('/api/select-square', (req, res) => {
  }
 });
 
-
-// Skip dare
 app.post('/api/skip-dare', (req, res) => {
- console.log('⏭️ Skip dare endpoint hit');
-
  try {
   const { roomId, playerId } = req.body;
   const room = roomId.toUpperCase();
@@ -291,8 +309,11 @@ app.post('/api/skip-dare', (req, res) => {
   const currentIndex = playerIds.indexOf(game.currentTurn);
   game.currentTurn = playerIds[(currentIndex + 1) % playerIds.length];
   game.currentDare = null;
+  game.currentDarePlayer = null;
+  game.currentDareSquare = null;
 
-  // Resolve any pending polls
+  const gameState = game.getGameState();
+
   if (gamePolling[room] && gamePolling[room].pendingResponses) {
    const pending = gamePolling[room].pendingResponses;
    Object.keys(pending).forEach(pid => {
@@ -301,7 +322,7 @@ app.post('/api/skip-dare', (req, res) => {
      clearTimeout(timeout);
      pendingRes.json({
       success: true,
-      gameState: game.getGameState(),
+      gameState: gameState,
       hasChanges: true,
       timestamp: Date.now()
      });
@@ -312,7 +333,7 @@ app.post('/api/skip-dare', (req, res) => {
 
   res.json({
    success: true,
-   gameState: game.getGameState()
+   gameState: gameState
   });
 
  } catch (error) {
@@ -321,53 +342,12 @@ app.post('/api/skip-dare', (req, res) => {
  }
 });
 
-// Get game state
-app.get('/api/state', (req, res) => {
- console.log('📊 State endpoint hit');
-
- try {
-  const roomId = req.query.roomId?.toUpperCase();
-  const playerId = req.query.playerId;
-
-  if (!roomId || !playerId) {
-   return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
-  }
-
-  const game = games[roomId];
-  if (!game) {
-   return res.status(404).json({ success: false, error: 'Game not found' });
-  }
-
-  const player = game.players[playerId];
-  if (!player) {
-   return res.status(404).json({ success: false, error: 'Player not found' });
-  }
-
-  player.isConnected = true;
-
-  res.json({
-   success: true,
-   gameState: game.getGameState()
-  });
-
- } catch (error) {
-  console.error('Error getting state:', error);
-  res.status(500).json({ success: false, error: error.message });
- }
-});
-
-// Root route - serve index.html
+// Serve HTML for root
 app.get('/', (req, res) => {
  res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
-// Catch all - log 404s
-app.use((req, res) => {
- console.log(`404: ${req.method} ${req.path}`);
- res.status(404).json({ success: false, error: 'Not found' });
-});
-
-// Cleanup inactive games
+// Cleanup
 setInterval(() => {
  const now = Date.now();
  Object.keys(gamePolling).forEach(roomId => {

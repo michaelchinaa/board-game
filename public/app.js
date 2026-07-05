@@ -10,6 +10,7 @@ let pollingActive = false;
 let pollingTimeout = null;
 let lastStateHash = '';
 let pollCount = 0;
+let lastDisplayedDareId = null;
 
 // DOM Elements
 const loginScreen = document.getElementById('login-screen');
@@ -102,8 +103,7 @@ function joinGame() {
                 // If there's already a current dare when joining, display it
                 if (gameState.currentDare && gameState.currentDarePlayer) {
                     const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
-                    const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
-                    const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
+                    const squareIndex = gameState.currentDareSquare || 0;
                     displaySquareDetails(squareIndex, gameState.currentDare, playerName);
                 }
             }
@@ -152,8 +152,6 @@ function pollForUpdates() {
     }
     url += `&_=${Date.now()}`;
 
-    console.log(`📡 Poll #${pollCount}`);
-
     fetch(url, {
         signal: AbortSignal.timeout(35000)
     })
@@ -182,18 +180,23 @@ function pollForUpdates() {
                     // FIX: Display dare for BOTH players
                     // ============================================
                     if (gameState.currentDare && gameState.currentDarePlayer) {
-                        console.log('🎯 Displaying dare for both players:', gameState.currentDare.text);
-                        const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+                        const dareId = gameState.currentDare.id || gameState.currentDare.text;
 
-                        // Find which square was selected from history
-                        const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
-                        const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
+                        // Only display if it's a new dare
+                        if (dareId !== lastDisplayedDareId) {
+                            lastDisplayedDareId = dareId;
 
-                        displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+                            console.log('🎯 Displaying dare for both players:', gameState.currentDare.text);
+                            const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+                            const squareIndex = gameState.currentDareSquare || 0;
 
-                        // Add to history if not already there
-                        if (lastHistory && !document.querySelector(`.history-item:contains("${lastHistory.dare}")`)) {
-                            addHistory(`📍 ${playerName} picked square ${lastHistory.square}: "${lastHistory.dare}"`);
+                            displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+
+                            // Add to history
+                            const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
+                            if (lastHistory) {
+                                addHistory(`📍 ${lastHistory.playerName || playerName} picked square ${lastHistory.square}: "${lastHistory.dare}"`);
+                            }
                         }
                     }
 
@@ -231,10 +234,13 @@ function fetchGameState() {
 
                 // Display current dare if any
                 if (gameState.currentDare && gameState.currentDarePlayer) {
-                    const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
-                    const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
-                    const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
-                    displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+                    const dareId = gameState.currentDare.id || gameState.currentDare.text;
+                    if (dareId !== lastDisplayedDareId) {
+                        lastDisplayedDareId = dareId;
+                        const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+                        const squareIndex = gameState.currentDareSquare || 0;
+                        displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+                    }
                 }
             }
         })
@@ -300,8 +306,6 @@ function renderBoard() {
     const isPlaying = gameState?.status === 'PLAYING';
     const isFinished = gameState?.status === 'FINISHED';
     const canSelect = isMyTurn && isPlaying && !isFinished;
-
-    console.log(`🎯 Rendering board: canSelect=${canSelect}, isMyTurn=${isMyTurn}, isPlaying=${isPlaying}`);
 
     for (let i = 0; i < squareCount; i++) {
         const square = document.createElement('div');
@@ -379,7 +383,7 @@ function displaySquareDetails(squareIndex, dare, playerName) {
     }
 
     // Add a toast notification for the dare
-    showToast(`📋 Dare revealed: ${dare.text.substring(0, 50)}${dare.text.length > 50 ? '...' : ''}`);
+    showToast(`📋 Dare: ${dare.text.substring(0, 50)}${dare.text.length > 50 ? '...' : ''}`);
 }
 
 // ============================================
@@ -402,7 +406,6 @@ function selectSquare(index) {
         return;
     }
 
-    // Check if square is already used
     if (gameState?.usedSquares?.includes(index)) {
         showToast('❌ This square is already used!');
         return;
@@ -435,7 +438,6 @@ function selectSquare(index) {
                 return;
             }
 
-            // Update game state
             if (data.gameState) {
                 gameState = data.gameState;
                 lastStateHash = JSON.stringify(gameState);
@@ -443,7 +445,6 @@ function selectSquare(index) {
                 updateUI();
             }
 
-            // Display the dare details - this will also be shown via polling
             if (data.result && data.result.dare) {
                 console.log('🎯 Displaying dare:', data.result.dare);
                 displaySquareDetails(

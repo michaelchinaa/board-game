@@ -19,6 +19,8 @@ class SpicyLDRGame {
   this.currentTurn = player1Id;
   this.status = 'WAITING';
   this.currentDare = null;
+  this.currentDarePlayer = null;
+  this.currentDareSquare = null;
   this.gameHistory = [];
   this.dares = this.loadDares();
   this.board = this.generateRandomBoard();
@@ -42,7 +44,6 @@ class SpicyLDRGame {
 
  generateRandomBoard() {
   const dares = [...this.dares];
-  // Shuffle the dares array
   for (let i = dares.length - 1; i > 0; i--) {
    const j = Math.floor(Math.random() * (i + 1));
    [dares[i], dares[j]] = [dares[j], dares[i]];
@@ -50,7 +51,6 @@ class SpicyLDRGame {
 
   const board = {};
   for (let i = 1; i <= 36; i++) {
-   // Cycle through shuffled dares
    const dareIndex = (i - 1) % dares.length;
    board[i] = {
     dareId: dares[dareIndex].id
@@ -123,7 +123,14 @@ class SpicyLDRGame {
   player.squaresPicked = (player.squaresPicked || 0) + 1;
   player.completedDares.push(dare.id);
 
-  this.currentDare = dare;
+  // Store the current dare with ALL details
+  this.currentDare = {
+   id: dare.id,
+   text: dare.text
+  };
+  this.currentDarePlayer = playerId;
+  this.currentDareSquare = squareIndex;
+
   this.roundNumber++;
 
   this.gameHistory.push({
@@ -132,6 +139,7 @@ class SpicyLDRGame {
    playerName: player.name,
    square: squareIndex + 1,
    dare: dare.text,
+   dareId: dare.id,
    timestamp: Date.now()
   });
 
@@ -148,8 +156,10 @@ class SpicyLDRGame {
   }
 
   return {
-   dare,
+   dare: this.currentDare,
    squareIndex,
+   playerId: playerId,
+   playerName: player.name,
    remaining,
    gameOver,
    nextTurn: this.currentTurn,
@@ -165,6 +175,8 @@ class SpicyLDRGame {
    currentTurnName: this.players[this.currentTurn]?.name || 'Unknown',
    status: this.status,
    currentDare: this.currentDare,
+   currentDarePlayer: this.currentDarePlayer,
+   currentDareSquare: this.currentDareSquare,
    roundNumber: this.roundNumber,
    board: this.board,
    usedSquares: Array.from(this.usedSquares),
