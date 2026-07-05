@@ -96,6 +96,8 @@ function joinGame() {
             if (data.gameState) {
                 gameState = data.gameState;
                 lastStateHash = JSON.stringify(gameState);
+                renderBoard();
+                updateUI();
             }
             showGameScreen();
             addHistory(`🔗 Joined game: ${roomId}`);
@@ -136,20 +138,18 @@ function pollForUpdates() {
 
     pollCount++;
 
-    // Build URL with query params
     let url = `/api/poll?roomId=${encodeURIComponent(roomId)}&playerId=${encodeURIComponent(playerId)}`;
     if (lastStateHash) {
         url += `&lastState=${encodeURIComponent(lastStateHash)}`;
     }
     url += `&_=${Date.now()}`;
 
-    console.log(`📡 Poll #${pollCount}: ${url}`);
+    console.log(`📡 Poll #${pollCount}`);
 
     fetch(url, {
         signal: AbortSignal.timeout(35000)
     })
         .then(res => {
-            console.log(`📡 Poll response: ${res.status}`);
             if (!res.ok) {
                 throw new Error(`HTTP ${res.status}`);
             }
@@ -265,6 +265,8 @@ function renderBoard() {
     const isFinished = gameState?.status === 'FINISHED';
     const canSelect = isMyTurn && isPlaying && !isFinished;
 
+    console.log(`🎯 Rendering board: canSelect=${canSelect}, isMyTurn=${isMyTurn}, isPlaying=${isPlaying}`);
+
     for (let i = 0; i < squareCount; i++) {
         const square = document.createElement('div');
         square.className = 'square';
@@ -309,25 +311,40 @@ function renderBoard() {
 }
 
 // ============================================
-// SQUARE DETAILS
+// SQUARE DETAILS - FIXED
 // ============================================
 
 function displaySquareDetails(squareIndex, dare, playerName) {
+    console.log('📋 Displaying square details:', { squareIndex, dare, playerName });
+
+    if (!dare) {
+        console.error('❌ No dare data provided!');
+        squareDetailsContent.innerHTML = `
+      <div class="empty-state">
+        <div class="big-icon">❌</div>
+        <p>Error: No dare data</p>
+      </div>
+    `;
+        return;
+    }
+
     squareNumberDisplay.textContent = `#${squareIndex + 1}`;
 
     squareDetailsContent.innerHTML = `
     <div class="dare-display">
-      <div class="dare-text">${dare.text}</div>
-      <div class="dare-player">👤 Selected by: ${playerName}</div>
+      <div class="dare-text">${dare.text || 'No text available'}</div>
+      <div class="dare-player">👤 Selected by: ${playerName || 'Unknown'}</div>
     </div>
   `;
 
     skipBtn.disabled = false;
-    gameState.currentDare = dare;
+    if (gameState) {
+        gameState.currentDare = dare;
+    }
 }
 
 // ============================================
-// GAME ACTIONS
+// GAME ACTIONS - FIXED
 // ============================================
 
 function selectSquare(index) {
@@ -340,8 +357,15 @@ function selectSquare(index) {
 
     const isMyTurn = gameState?.currentTurn === playerId;
     const isPlaying = gameState?.status === 'PLAYING';
+
     if (!isMyTurn || !isPlaying) {
         showToast('⏳ Not your turn!');
+        return;
+    }
+
+    // Check if square is already used
+    if (gameState?.usedSquares?.includes(index)) {
+        showToast('❌ This square is already used!');
         return;
     }
 
@@ -349,6 +373,8 @@ function selectSquare(index) {
     squareElements.forEach(el => {
         el.style.pointerEvents = 'none';
     });
+
+    showToast('⏳ Selecting square...');
 
     fetch('/api/select-square', {
         method: 'POST',
@@ -359,6 +385,8 @@ function selectSquare(index) {
     })
         .then(res => res.json())
         .then(data => {
+            console.log('📥 Select square response:', data);
+
             squareElements.forEach(el => {
                 el.style.pointerEvents = '';
             });
@@ -368,11 +396,27 @@ function selectSquare(index) {
                 return;
             }
 
+            // Update game state
             if (data.gameState) {
                 gameState = data.gameState;
                 lastStateHash = JSON.stringify(gameState);
                 renderBoard();
                 updateUI();
+            }
+
+            // Display the dare details
+            if (data.result && data.result.dare) {
+                console.log('🎯 Displaying dare:', data.result.dare);
+                displaySquareDetails(
+                    data.result.squareIndex || index,
+                    data.result.dare,
+                    gameState?.players?.[playerId]?.name || playerName
+                );
+                addHistory(`📍 ${playerName} picked square ${(data.result.squareIndex || index) + 1}`);
+                showToast(`✅ Square ${(data.result.squareIndex || index) + 1} selected!`);
+            } else {
+                console.error('❌ No dare in response:', data);
+                showToast('❌ Error: No dare data received');
             }
 
             if (data.gameOver) {
@@ -382,6 +426,7 @@ function selectSquare(index) {
             }
         })
         .catch(err => {
+            console.error('❌ Select square error:', err);
             squareElements.forEach(el => {
                 el.style.pointerEvents = '';
             });

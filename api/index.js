@@ -203,13 +203,9 @@ app.get('/api/poll', (req, res) => {
 
 // Select square
 app.post('/api/select-square', (req, res) => {
- console.log('🎯 Select square endpoint hit');
-
  try {
   const { roomId, playerId, squareIndex } = req.body;
   const room = roomId.toUpperCase();
-
-  console.log(`🎯 Select square: room=${room}, player=${playerId}, square=${squareIndex}`);
 
   const game = games[room];
   if (!game) {
@@ -222,7 +218,17 @@ app.post('/api/select-square', (req, res) => {
    return res.status(400).json({ success: false, error: result.error });
   }
 
-  // Resolve any pending polls for this room
+  // Get the updated game state
+  const gameState = game.getGameState();
+
+  // Log what we're sending back
+  console.log('📤 Sending square selection response:', {
+   squareIndex: result.squareIndex,
+   dareId: result.dare?.id,
+   dareText: result.dare?.text
+  });
+
+  // Resolve pending polls
   if (gamePolling[room] && gamePolling[room].pendingResponses) {
    const pending = gamePolling[room].pendingResponses;
    Object.keys(pending).forEach(pid => {
@@ -231,7 +237,7 @@ app.post('/api/select-square', (req, res) => {
      clearTimeout(timeout);
      pendingRes.json({
       success: true,
-      gameState: game.getGameState(),
+      gameState: gameState,
       hasChanges: true,
       timestamp: Date.now()
      });
@@ -240,7 +246,6 @@ app.post('/api/select-square', (req, res) => {
    });
   }
 
-  // Check if game is over
   const gameOver = game.usedSquares.size >= game.totalSquares;
   if (gameOver) {
    game.status = 'FINISHED';
@@ -248,8 +253,12 @@ app.post('/api/select-square', (req, res) => {
 
   res.json({
    success: true,
-   result,
-   gameState: game.getGameState(),
+   result: {
+    squareIndex: result.squareIndex,
+    dare: result.dare,  // This must be included!
+    remaining: result.remaining
+   },
+   gameState: gameState,
    gameOver
   });
 
@@ -258,6 +267,7 @@ app.post('/api/select-square', (req, res) => {
   res.status(500).json({ success: false, error: error.message });
  }
 });
+
 
 // Skip dare
 app.post('/api/skip-dare', (req, res) => {
