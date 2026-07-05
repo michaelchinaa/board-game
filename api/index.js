@@ -8,6 +8,7 @@ const SpicyLDRGame = require('../gamelogic');
 
 const app = express();
 
+// Middleware
 app.use(cors({
  origin: "*",
  methods: ["GET", "POST", "OPTIONS"],
@@ -15,13 +16,13 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// IMPORTANT: Serve static files BEFORE API routes
+// This ensures CSS, JS, HTML are served correctly
 app.use(express.static(path.join(__dirname, '../public')));
 
-// Log all requests for debugging
-app.use((req, res, next) => {
- console.log(`${req.method} ${req.path}`);
- next();
-});
+// Also serve static files from root for Vercel compatibility
+app.use(express.static(path.join(__dirname, '../')));
 
 // Load dares
 const daresPath = path.join(__dirname, '../dares.json');
@@ -39,6 +40,10 @@ try {
 // Store games in memory
 const games = {};
 const gamePolling = {};
+
+// ============================================
+// API ROUTES
+// ============================================
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -98,7 +103,6 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
 
   console.log(`✅ Player ${playerName} joined room ${roomId}`);
 
-  // Check if both players are ready
   const playerIds = Object.keys(game.players);
   if (playerIds.length === 2) {
    playerIds.forEach(id => {
@@ -122,53 +126,40 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  }
 });
 
-// POLL endpoint - GET with query params
+// POLL endpoint
 app.get('/api/poll', (req, res) => {
- console.log('📡 Poll endpoint hit!');
-
  try {
   const roomId = req.query.roomId?.toUpperCase();
   const playerId = req.query.playerId;
   const lastState = req.query.lastState || '';
 
-  console.log(`📡 Poll: room=${roomId}, player=${playerId}`);
-
   if (!roomId || !playerId) {
-   console.log('❌ Missing roomId or playerId');
    return res.status(400).json({ success: false, error: 'Missing roomId or playerId' });
   }
 
   const game = games[roomId];
   if (!game) {
-   console.log(`❌ Game not found: ${roomId}`);
    return res.status(404).json({ success: false, error: 'Game not found' });
   }
 
   const player = game.players[playerId];
   if (!player) {
-   console.log(`❌ Player not found: ${playerId}`);
    return res.status(404).json({ success: false, error: 'Player not found' });
   }
 
-  // Mark player as connected
   player.isConnected = true;
 
-  // Update polling tracking
   if (!gamePolling[roomId]) {
    gamePolling[roomId] = { lastPoll: Date.now(), clients: {} };
   }
   gamePolling[roomId].clients[playerId] = Date.now();
   gamePolling[roomId].lastPoll = Date.now();
 
-  // Get current game state
   const currentState = game.getGameState();
   const stateHash = JSON.stringify(currentState);
 
-  // If state hasn't changed, hold the connection (long polling)
   if (stateHash === lastState) {
-   // Wait up to 30 seconds for changes
    const timeout = setTimeout(() => {
-    console.log(`⏱️ Poll timeout for ${playerId}`);
     res.json({
      success: true,
      gameState: currentState,
@@ -177,17 +168,13 @@ app.get('/api/poll', (req, res) => {
     });
    }, 30000);
 
-   // Store the response for later
    if (!gamePolling[roomId].pendingResponses) {
     gamePolling[roomId].pendingResponses = {};
    }
    gamePolling[roomId].pendingResponses[playerId] = { res, timeout };
-
    return;
   }
 
-  // State changed, send immediately
-  console.log(`✅ State changed for ${playerId}, sending update`);
   res.json({
    success: true,
    gameState: currentState,
@@ -201,120 +188,8 @@ app.get('/api/poll', (req, res) => {
  }
 });
 
-// Select square
-app.post('/api/select-square', (req, res) => {
- console.log('🎯 Select square endpoint hit');
-
- try {
-  const { roomId, playerId, squareIndex } = req.body;
-  const room = roomId.toUpperCase();
-
-  console.log(`🎯 Select square: room=${room}, player=${playerId}, square=${squareIndex}`);
-
-  const game = games[room];
-  if (!game) {
-   return res.status(404).json({ success: false, error: 'Game not found' });
-  }
-
-  const result = game.selectSquare(playerId, squareIndex);
-
-  if (result.error) {
-   return res.status(400).json({ success: false, error: result.error });
-  }
-
-  // Resolve any pending polls for this room
-  if (gamePolling[room] && gamePolling[room].pendingResponses) {
-   const pending = gamePolling[room].pendingResponses;
-   Object.keys(pending).forEach(pid => {
-    const { res: pendingRes, timeout } = pending[pid];
-    if (pendingRes && !pendingRes.headersSent) {
-     clearTimeout(timeout);
-     pendingRes.json({
-      success: true,
-      gameState: game.getGameState(),
-      hasChanges: true,
-      timestamp: Date.now()
-     });
-    }
-    delete pending[pid];
-   });
-  }
-
-  // Check if game is over
-  const gameOver = game.usedSquares.size >= game.totalSquares;
-  if (gameOver) {
-   game.status = 'FINISHED';
-  }
-
-  res.json({
-   success: true,
-   result,
-   gameState: game.getGameState(),
-   gameOver
-  });
-
- } catch (error) {
-  console.error('Error selecting square:', error);
-  res.status(500).json({ success: false, error: error.message });
- }
-});
-
-// Skip dare
-app.post('/api/skip-dare', (req, res) => {
- console.log('⏭️ Skip dare endpoint hit');
-
- try {
-  const { roomId, playerId } = req.body;
-  const room = roomId.toUpperCase();
-
-  const game = games[room];
-  if (!game) {
-   return res.status(404).json({ success: false, error: 'Game not found' });
-  }
-
-  const player = game.players[playerId];
-  if (game.currentDare) {
-   player.skippedDares.push(game.currentDare.id);
-  }
-
-  const playerIds = Object.keys(game.players);
-  const currentIndex = playerIds.indexOf(game.currentTurn);
-  game.currentTurn = playerIds[(currentIndex + 1) % playerIds.length];
-  game.currentDare = null;
-
-  // Resolve any pending polls
-  if (gamePolling[room] && gamePolling[room].pendingResponses) {
-   const pending = gamePolling[room].pendingResponses;
-   Object.keys(pending).forEach(pid => {
-    const { res: pendingRes, timeout } = pending[pid];
-    if (pendingRes && !pendingRes.headersSent) {
-     clearTimeout(timeout);
-     pendingRes.json({
-      success: true,
-      gameState: game.getGameState(),
-      hasChanges: true,
-      timestamp: Date.now()
-     });
-    }
-    delete pending[pid];
-   });
-  }
-
-  res.json({
-   success: true,
-   gameState: game.getGameState()
-  });
-
- } catch (error) {
-  console.error('Error skipping dare:', error);
-  res.status(500).json({ success: false, error: error.message });
- }
-});
-
 // Get game state
 app.get('/api/state', (req, res) => {
- console.log('📊 State endpoint hit');
-
  try {
   const roomId = req.query.roomId?.toUpperCase();
   const playerId = req.query.playerId;
@@ -346,18 +221,111 @@ app.get('/api/state', (req, res) => {
  }
 });
 
-// Root route - serve index.html
-app.get('/', (req, res) => {
- res.sendFile(path.join(__dirname, '../public/index.html'));
+// Select square
+app.post('/api/select-square', (req, res) => {
+ try {
+  const { roomId, playerId, squareIndex } = req.body;
+  const room = roomId.toUpperCase();
+
+  const game = games[room];
+  if (!game) {
+   return res.status(404).json({ success: false, error: 'Game not found' });
+  }
+
+  const result = game.selectSquare(playerId, squareIndex);
+
+  if (result.error) {
+   return res.status(400).json({ success: false, error: result.error });
+  }
+
+  if (gamePolling[room] && gamePolling[room].pendingResponses) {
+   const pending = gamePolling[room].pendingResponses;
+   Object.keys(pending).forEach(pid => {
+    const { res: pendingRes, timeout } = pending[pid];
+    if (pendingRes && !pendingRes.headersSent) {
+     clearTimeout(timeout);
+     pendingRes.json({
+      success: true,
+      gameState: game.getGameState(),
+      hasChanges: true,
+      timestamp: Date.now()
+     });
+    }
+    delete pending[pid];
+   });
+  }
+
+  const gameOver = game.usedSquares.size >= game.totalSquares;
+  if (gameOver) {
+   game.status = 'FINISHED';
+  }
+
+  res.json({
+   success: true,
+   result,
+   gameState: game.getGameState(),
+   gameOver
+  });
+
+ } catch (error) {
+  console.error('Error selecting square:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
 });
 
-// Catch all - log 404s
-app.use((req, res) => {
- console.log(`404: ${req.method} ${req.path}`);
- res.status(404).json({ success: false, error: 'Not found' });
+// Skip dare
+app.post('/api/skip-dare', (req, res) => {
+ try {
+  const { roomId, playerId } = req.body;
+  const room = roomId.toUpperCase();
+
+  const game = games[room];
+  if (!game) {
+   return res.status(404).json({ success: false, error: 'Game not found' });
+  }
+
+  const player = game.players[playerId];
+  if (game.currentDare) {
+   player.skippedDares.push(game.currentDare.id);
+  }
+
+  const playerIds = Object.keys(game.players);
+  const currentIndex = playerIds.indexOf(game.currentTurn);
+  game.currentTurn = playerIds[(currentIndex + 1) % playerIds.length];
+  game.currentDare = null;
+
+  if (gamePolling[room] && gamePolling[room].pendingResponses) {
+   const pending = gamePolling[room].pendingResponses;
+   Object.keys(pending).forEach(pid => {
+    const { res: pendingRes, timeout } = pending[pid];
+    if (pendingRes && !pendingRes.headersSent) {
+     clearTimeout(timeout);
+     pendingRes.json({
+      success: true,
+      gameState: game.getGameState(),
+      hasChanges: true,
+      timestamp: Date.now()
+     });
+    }
+    delete pending[pid];
+   });
+  }
+
+  res.json({
+   success: true,
+   gameState: game.getGameState()
+  });
+
+ } catch (error) {
+  console.error('Error skipping dare:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
 });
 
-// Cleanup inactive games
+// ============================================
+// CLEANUP
+// ============================================
+
 setInterval(() => {
  const now = Date.now();
  Object.keys(gamePolling).forEach(roomId => {
@@ -378,4 +346,5 @@ setInterval(() => {
  });
 }, 300000);
 
+// Export for Vercel
 module.exports = app;
