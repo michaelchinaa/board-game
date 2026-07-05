@@ -110,31 +110,37 @@ function initializeSocket() {
         socket = null;
     }
 
-    // For Vercel - polling only
+    // Get the current host
+    const host = window.location.host;
+    const protocol = window.location.protocol;
+
+    // Connect with proper configuration
     socket = io({
-        transports: ['polling'],  // Only polling for Vercel
-        upgrade: false,
+        transports: ['polling', 'websocket'],
+        upgrade: true,
+        rememberUpgrade: true,
         reconnection: true,
-        reconnectionAttempts: 10,
+        reconnectionAttempts: 20,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        timeout: 20000,
-        autoConnect: true
+        timeout: 60000,
+        autoConnect: true,
+        forceNew: true,
+        path: '/socket.io'
     });
 
     socket.on('connect', () => {
         console.log('✅ Connected to server!');
         showToast('✅ Connected to server!');
-        socket.emit('join-room', { roomId, playerId });
-    });
-
-    socket.on('connected', (data) => {
-        console.log('📨 Server confirmed connection:', data);
+        // Re-join room if we have roomId and playerId
+        if (roomId && playerId) {
+            socket.emit('join-room', { roomId, playerId });
+        }
     });
 
     socket.on('connect_error', (error) => {
         console.error('❌ Connection error:', error);
-        showToast(`⏳ Reconnecting...`);
+        showToast('⏳ Reconnecting...');
     });
 
     socket.on('disconnect', (reason) => {
@@ -148,73 +154,9 @@ function initializeSocket() {
     socket.on('reconnect', () => {
         console.log('🔄 Reconnected!');
         showToast('✅ Reconnected!');
-        socket.emit('join-room', { roomId, playerId });
-    });
-
-    socket.on('game-state', (state) => {
-        console.log('📊 Game state updated');
-        console.log('Status:', state.status);
-        console.log('Current turn:', state.currentTurnName);
-        console.log('Used squares:', state.usedSquares);
-        gameState = state;
-        renderBoard();
-        updateUI();
-    });
-
-    socket.on('player-joined', (data) => {
-        addHistory(`👋 ${data.message}`);
-        showToast(`👋 ${data.playerName} joined!`);
-        statusInfo.textContent = '🎉 Partner joined! Starting game...';
-    });
-
-    socket.on('game-ready', (data) => {
-        addHistory(`🎉 ${data.message}`);
-        showToast(`🎉 ${data.message}`);
-        statusInfo.textContent = '🎯 Click any square to start!';
-        setTimeout(() => {
-            renderBoard();
-        }, 100);
-    });
-
-    socket.on('player-disconnected', (data) => {
-        addHistory(`⚠️ ${data.message}`);
-        showToast(`⚠️ ${data.message}`);
-        statusInfo.textContent = '⏳ Waiting for player...';
-        renderBoard();
-    });
-
-    socket.on('square-selected', (data) => {
-        console.log('📍 Square selected:', data);
-        addHistory(`📍 ${data.playerName} picked square ${data.squareIndex + 1}`);
-        showToast(`📍 ${data.playerName} picked a square!`);
-        displaySquareDetails(data.squareIndex, data.dare, data.playerName);
-        usedSquaresDisplay.textContent = gameState?.usedSquares?.length || 0;
-    });
-
-    socket.on('dare-skipped', (data) => {
-        addHistory(`⏭️ ${data.message}`);
-        showToast(`⏭️ ${data.message}`);
-        squareDetailsContent.innerHTML = `
-            <div class="empty-state">
-                <div class="big-icon">⏭️</div>
-                <p>Dare was skipped</p>
-                <p class="sub-text">Click a new square</p>
-            </div>
-        `;
-        squareNumberDisplay.textContent = '—';
-    });
-
-    socket.on('game-finished', (data) => {
-        addHistory(`🏆 ${data.message}`);
-        showToast(`🏆 ${data.message}`);
-        statusInfo.textContent = '🏆 Game Finished! Great job! 🎉';
-        skipBtn.disabled = true;
-        renderBoard();
-    });
-
-    socket.on('error', (message) => {
-        console.error('❌ Server error:', message);
-        showToast('❌ ' + message);
+        if (roomId && playerId) {
+            socket.emit('join-room', { roomId, playerId });
+        }
     });
 }
 
