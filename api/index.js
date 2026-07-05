@@ -17,11 +17,22 @@ app.use(cors({
 
 app.use(express.json());
 
-// IMPORTANT: Serve static files BEFORE API routes
-// This ensures CSS, JS, HTML are served correctly
-app.use(express.static(path.join(__dirname, '../public')));
+// Serve static files from public directory
+const publicPath = path.join(__dirname, '../public');
+console.log(`📁 Serving static files from: ${publicPath}`);
 
-// Also serve static files from root for Vercel compatibility
+// Check if public directory exists
+if (fs.existsSync(publicPath)) {
+ console.log('✅ Public directory found');
+ const files = fs.readdirSync(publicPath);
+ console.log(`📄 Files in public: ${files.join(', ')}`);
+} else {
+ console.log('❌ Public directory NOT found!');
+}
+
+app.use(express.static(publicPath));
+
+// Also serve from root for fallback
 app.use(express.static(path.join(__dirname, '../')));
 
 // Load dares
@@ -319,6 +330,19 @@ app.post('/api/skip-dare', (req, res) => {
  } catch (error) {
   console.error('Error skipping dare:', error);
   res.status(500).json({ success: false, error: error.message });
+ }
+});
+
+// ============================================
+// Serve HTML for root - IMPORTANT
+// ============================================
+
+app.get('/', (req, res) => {
+ const indexPath = path.join(__dirname, '../public/index.html');
+ if (fs.existsSync(indexPath)) {
+  res.sendFile(indexPath);
+ } else {
+  res.status(404).send('index.html not found');
  }
 });
 
