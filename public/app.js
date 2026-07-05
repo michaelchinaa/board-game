@@ -98,6 +98,14 @@ function joinGame() {
                 lastStateHash = JSON.stringify(gameState);
                 renderBoard();
                 updateUI();
+
+                // If there's already a current dare when joining, display it
+                if (gameState.currentDare && gameState.currentDarePlayer) {
+                    const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+                    const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
+                    const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
+                    displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+                }
             }
             showGameScreen();
             addHistory(`🔗 Joined game: ${roomId}`);
@@ -169,6 +177,26 @@ function pollForUpdates() {
                     gameState = data.gameState;
                     renderBoard();
                     updateUI();
+
+                    // ============================================
+                    // FIX: Display dare for BOTH players
+                    // ============================================
+                    if (gameState.currentDare && gameState.currentDarePlayer) {
+                        console.log('🎯 Displaying dare for both players:', gameState.currentDare.text);
+                        const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+
+                        // Find which square was selected from history
+                        const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
+                        const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
+
+                        displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+
+                        // Add to history if not already there
+                        if (lastHistory && !document.querySelector(`.history-item:contains("${lastHistory.dare}")`)) {
+                            addHistory(`📍 ${playerName} picked square ${lastHistory.square}: "${lastHistory.dare}"`);
+                        }
+                    }
+
                     console.log('📊 Game state updated via poll');
                 }
             }
@@ -200,6 +228,14 @@ function fetchGameState() {
                 lastStateHash = JSON.stringify(gameState);
                 renderBoard();
                 updateUI();
+
+                // Display current dare if any
+                if (gameState.currentDare && gameState.currentDarePlayer) {
+                    const playerName = gameState.players[gameState.currentDarePlayer]?.name || 'Unknown';
+                    const lastHistory = gameState.gameHistory?.[gameState.gameHistory.length - 1];
+                    const squareIndex = lastHistory?.square ? lastHistory.square - 1 : 0;
+                    displaySquareDetails(squareIndex, gameState.currentDare, playerName);
+                }
             }
         })
         .catch(err => {
@@ -311,7 +347,7 @@ function renderBoard() {
 }
 
 // ============================================
-// SQUARE DETAILS - FIXED
+// SQUARE DETAILS - Display for both players
 // ============================================
 
 function displaySquareDetails(squareIndex, dare, playerName) {
@@ -322,13 +358,13 @@ function displaySquareDetails(squareIndex, dare, playerName) {
         squareDetailsContent.innerHTML = `
       <div class="empty-state">
         <div class="big-icon">❌</div>
-        <p>Error: No dare data</p>
+        <p>No dare data available</p>
       </div>
     `;
         return;
     }
 
-    squareNumberDisplay.textContent = `#${squareIndex + 1}`;
+    squareNumberDisplay.textContent = `#${(squareIndex || 0) + 1}`;
 
     squareDetailsContent.innerHTML = `
     <div class="dare-display">
@@ -341,10 +377,13 @@ function displaySquareDetails(squareIndex, dare, playerName) {
     if (gameState) {
         gameState.currentDare = dare;
     }
+
+    // Add a toast notification for the dare
+    showToast(`📋 Dare revealed: ${dare.text.substring(0, 50)}${dare.text.length > 50 ? '...' : ''}`);
 }
 
 // ============================================
-// GAME ACTIONS - FIXED
+// GAME ACTIONS
 // ============================================
 
 function selectSquare(index) {
@@ -404,15 +443,15 @@ function selectSquare(index) {
                 updateUI();
             }
 
-            // Display the dare details
+            // Display the dare details - this will also be shown via polling
             if (data.result && data.result.dare) {
                 console.log('🎯 Displaying dare:', data.result.dare);
                 displaySquareDetails(
                     data.result.squareIndex || index,
                     data.result.dare,
-                    gameState?.players?.[playerId]?.name || playerName
+                    data.result.playerName || playerName
                 );
-                addHistory(`📍 ${playerName} picked square ${(data.result.squareIndex || index) + 1}`);
+                addHistory(`📍 ${data.result.playerName || playerName} picked square ${(data.result.squareIndex || index) + 1}: "${data.result.dare.text}"`);
                 showToast(`✅ Square ${(data.result.squareIndex || index) + 1} selected!`);
             } else {
                 console.error('❌ No dare in response:', data);
