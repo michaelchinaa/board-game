@@ -1,14 +1,14 @@
 // ============================================
-// LDR SPICY GAME - Pick & Play Mode
+// LDR SPICY GAME - HTTP Polling Version
 // ============================================
 
-let socket = null;
 let gameState = null;
 let playerId = null;
 let roomId = null;
 let playerName = '';
-let reconnectAttempts = 0;
-let reconnectTimer = null;
+let pollingActive = false;
+let pollingTimeout = null;
+let lastStateHash = '';
 
 // DOM Elements
 const loginScreen = document.getElementById('login-screen');
@@ -54,11 +54,12 @@ function createGame() {
             }
             playerId = data.playerId;
             roomId = data.roomId;
-            initializeSocket();
             showGameScreen();
             addHistory(`🎮 Game created! Share room code: ${roomId}`);
             showToast(`✅ Game created! Room: ${roomId}`);
             statusInfo.textContent = '⏳ Waiting for partner to join...';
+            startPolling();
+            fetchGameState();
         })
         .catch(err => {
             showToast('❌ Error creating game: ' + err.message);
@@ -91,11 +92,15 @@ function joinGame() {
                 return;
             }
             playerId = data.playerId;
-            initializeSocket();
+            if (data.gameState) {
+                gameState = data.gameState;
+            }
             showGameScreen();
             addHistory(`🔗 Joined game: ${roomId}`);
             showToast(`✅ Joined room: ${roomId}`);
             statusInfo.textContent = '⏳ Waiting for game to start...';
+            startPolling();
+            fetchGameState();
         })
         .catch(err => {
             showToast('❌ Error joining game: ' + err.message);
@@ -103,168 +108,100 @@ function joinGame() {
 }
 
 // ============================================
-// SOCKET.IO CONNECTION - Fixed for Vercel
+// HTTP POLLING - The heart of the game
 // ============================================
 
-function initializeSocket() {
-    if (socket) {
-        socket.disconnect();
-        socket = null;
+function startPolling() {
+    if (pollingActive) return;
+    pollingActive = true;
+    pollForUpdates();
+}
+
+function stopPolling() {
+    pollingActive = false;
+    if (pollingTimeout) {
+        clearTimeout(pollingTimeout);
+        pollingTimeout = null;
+    }
+}
+
+function pollForUpdates() {
+    if (!pollingActive || !roomId || !playerId) {
+        console.log('⏹️ Polling stopped');
+        return;
     }
 
-    // Clear any reconnect timer
-    if (reconnectTimer) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
+    // Build URL with last state hash
+    let url = `/api/poll/${roomId}/${playerId}`;
+    if (lastStateHash) {
+        url += `?lastState=${encodeURIComponent(lastStateHash)}`;
     }
 
-    reconnectAttempts = 0;
+    console.log('📡 Polling for updates...');
 
-    // Connect with polling only for Vercel
-    socket = io({
-        transports: ['polling'],
-        upgrade: false,
-        reconnection: true,
-        reconnectionAttempts: 20,
-        reconnectionDelay: 1000,
-        reconnectionDelayMax: 5000,
-        timeout: 60000,
-        autoConnect: true,
-        forceNew: true,
-        path: '/socket.io',
-        // Add extra options for Vercel
-        withCredentials: false,
-        extraHeaders: {
-            'Cache-Control': 'no-cache'
-        }
-    });
+    fetch(url, {
+        // Long polling - server holds connection up to 30s
+        signal: AbortSignal.timeout(35000)
+    })
+        .then(res => {
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+            return res.json();
+        })
+        .then(data => {
+            if (!data.success) {
+                console.warn('Poll error:', data.error);
+                // Continue polling after a delay
+                setTimeout(pollForUpdates, 1000);
+                return;
+            }
 
-    socket.on('connect', () => {
-        console.log('✅ Connected to server!');
-        console.log('Socket ID:', socket.id);
-        reconnectAttempts = 0;
-        showToast('✅ Connected to server!');
-        if (roomId && playerId) {
-            socket.emit('join-room', { roomId, playerId });
-        }
-    });
+            if (data.gameState) {
+                // Update state if changed
+                const newHash = JSON.stringify(data.gameState);
+                if (newHash !== lastStateHash || data.hasChanges) {
+                    lastStateHash = newHash;
+                    gameState = data.gameState;
+                    renderBoard();
+                    updateUI();
+                    console.log('📊 Game state updated via poll');
+                }
+            }
 
-    socket.on('connect_error', (error) => {
-        console.error('❌ Connection error:', error);
-        reconnectAttempts++;
-        console.log(`Reconnection attempt ${reconnectAttempts}`);
+            // Continue polling
+            setTimeout(pollForUpdates, 100);
+        })
+        .catch(err => {
+            if (err.name === 'AbortError') {
+                // Timeout - this is normal for long polling
+                console.log('⏱️ Poll timeout, retrying...');
+                setTimeout(pollForUpdates, 100);
+            } else {
+                console.error('❌ Poll error:', err);
+                // Wait and retry on error
+                setTimeout(pollForUpdates, 2000);
+                showToast('⚠️ Connection issue, retrying...');
+            }
+        });
+}
 
-        if (reconnectAttempts < 5) {
-            showToast(`⏳ Reconnecting... (${reconnectAttempts}/20)`);
-        } else {
-            showToast('⚠️ Having trouble connecting. Retrying...');
-        }
-    });
+function fetchGameState() {
+    if (!roomId || !playerId) return;
 
-    socket.on('disconnect', (reason) => {
-        console.log('🔌 Disconnected:', reason);
-        if (reason === 'io server disconnect') {
-            // Server disconnected us, try to reconnect
-            setTimeout(() => {
-                socket.connect();
-            }, 1000);
-        }
-        showToast('⚠️ Disconnected. Reconnecting...');
-    });
-
-    socket.on('reconnect', (attempt) => {
-        console.log(`🔄 Reconnected after ${attempt} attempts`);
-        showToast('✅ Reconnected!');
-        if (roomId && playerId) {
-            socket.emit('join-room', { roomId, playerId });
-        }
-    });
-
-    socket.on('reconnect_attempt', (attempt) => {
-        console.log(`🔄 Reconnection attempt ${attempt}`);
-    });
-
-    socket.on('reconnect_error', (error) => {
-        console.error('❌ Reconnection error:', error);
-    });
-
-    socket.on('reconnect_failed', () => {
-        console.error('❌ Reconnection failed');
-        showToast('❌ Could not reconnect. Please refresh the page.');
-    });
-
-    socket.on('connected', (data) => {
-        console.log('📨 Server confirmed connection:', data);
-    });
-
-    socket.on('game-state', (state) => {
-        console.log('📊 Game state updated');
-        console.log('Status:', state.status);
-        console.log('Current turn:', state.currentTurnName);
-        console.log('Used squares:', state.usedSquares);
-        gameState = state;
-        renderBoard();
-        updateUI();
-    });
-
-    socket.on('player-joined', (data) => {
-        addHistory(`👋 ${data.message}`);
-        showToast(`👋 ${data.playerName} joined!`);
-        statusInfo.textContent = '🎉 Partner joined! Starting game...';
-    });
-
-    socket.on('game-ready', (data) => {
-        addHistory(`🎉 ${data.message}`);
-        showToast(`🎉 ${data.message}`);
-        statusInfo.textContent = '🎯 Click any square to start!';
-        setTimeout(() => {
-            renderBoard();
-        }, 100);
-    });
-
-    socket.on('player-disconnected', (data) => {
-        addHistory(`⚠️ ${data.message}`);
-        showToast(`⚠️ ${data.message}`);
-        statusInfo.textContent = '⏳ Waiting for player...';
-        renderBoard();
-    });
-
-    socket.on('square-selected', (data) => {
-        console.log('📍 Square selected:', data);
-        addHistory(`📍 ${data.playerName} picked square ${data.squareIndex + 1}`);
-        showToast(`📍 ${data.playerName} picked a square!`);
-        displaySquareDetails(data.squareIndex, data.dare, data.playerName);
-        usedSquaresDisplay.textContent = gameState?.usedSquares?.length || 0;
-    });
-
-    socket.on('dare-skipped', (data) => {
-        addHistory(`⏭️ ${data.message}`);
-        showToast(`⏭️ ${data.message}`);
-        squareDetailsContent.innerHTML = `
-      <div class="empty-state">
-        <div class="big-icon">⏭️</div>
-        <p>Dare was skipped</p>
-        <p class="sub-text">Click a new square</p>
-      </div>
-    `;
-        squareNumberDisplay.textContent = '—';
-    });
-
-    socket.on('game-finished', (data) => {
-        addHistory(`🏆 ${data.message}`);
-        showToast(`🏆 ${data.message}`);
-        statusInfo.textContent = '🏆 Game Finished! Great job! 🎉';
-        skipBtn.disabled = true;
-        renderBoard();
-    });
-
-    socket.on('error', (message) => {
-        console.error('❌ Server error:', message);
-        showToast('❌ ' + message);
-    });
-
-    // Start connection
-    socket.connect();
+    fetch(`/api/state/${roomId}/${playerId}`)
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                gameState = data.gameState;
+                lastStateHash = JSON.stringify(gameState);
+                renderBoard();
+                updateUI();
+            }
+        })
+        .catch(err => {
+            console.error('Error fetching state:', err);
+        });
 }
 
 // ============================================
@@ -325,8 +262,6 @@ function renderBoard() {
     const isFinished = gameState?.status === 'FINISHED';
     const canSelect = isMyTurn && isPlaying && !isFinished;
 
-    console.log(`🎯 Rendering board: canSelect=${canSelect}, isMyTurn=${isMyTurn}, isPlaying=${isPlaying}, used=${usedSquares.size}`);
-
     for (let i = 0; i < squareCount; i++) {
         const square = document.createElement('div');
         square.className = 'square';
@@ -371,7 +306,7 @@ function renderBoard() {
 }
 
 // ============================================
-// SQUARE DETAILS DISPLAY
+// SQUARE DETAILS
 // ============================================
 
 function displaySquareDetails(squareIndex, dare, playerName) {
@@ -393,21 +328,108 @@ function displaySquareDetails(squareIndex, dare, playerName) {
 // ============================================
 
 function selectSquare(index) {
-    if (!socket || !socket.connected) {
-        showToast('❌ Not connected to server');
+    if (!roomId || !playerId) {
+        showToast('❌ Not connected to game');
         return;
     }
 
-    console.log(`📍 Sending select-square for index ${index}`);
-    socket.emit('select-square', { squareIndex: index });
+    console.log(`📍 Selecting square ${index + 1}`);
+
+    const isMyTurn = gameState?.currentTurn === playerId;
+    const isPlaying = gameState?.status === 'PLAYING';
+    if (!isMyTurn || !isPlaying) {
+        showToast('⏳ Not your turn!');
+        return;
+    }
+
+    // Disable button temporarily to prevent double clicks
+    const squareElements = document.querySelectorAll('.square');
+    squareElements.forEach(el => {
+        el.style.pointerEvents = 'none';
+    });
+
+    fetch(`/api/select-square/${roomId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ playerId, squareIndex: index })
+    })
+        .then(res => res.json())
+        .then(data => {
+            // Re-enable clicks
+            squareElements.forEach(el => {
+                el.style.pointerEvents = '';
+            });
+
+            if (!data.success) {
+                showToast('❌ ' + data.error);
+                return;
+            }
+
+            if (data.gameState) {
+                gameState = data.gameState;
+                lastStateHash = JSON.stringify(gameState);
+                renderBoard();
+                updateUI();
+            }
+
+            if (data.gameOver) {
+                showToast('🏆 Game Over! All squares used!');
+                statusInfo.textContent = '🏆 Game Finished! Great job! 🎉';
+                skipBtn.disabled = true;
+            }
+        })
+        .catch(err => {
+            squareElements.forEach(el => {
+                el.style.pointerEvents = '';
+            });
+            showToast('❌ Error: ' + err.message);
+        });
 }
 
 function skipDare() {
-    if (socket && socket.connected) {
-        socket.emit('skip-dare');
-        skipBtn.disabled = true;
-        showToast('⏭️ Skipping dare...');
+    if (!roomId || !playerId) {
+        showToast('❌ Not connected to game');
+        return;
     }
+
+    fetch(`/api/skip-dare/${roomId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ playerId })
+    })
+        .then(res => res.json())
+        .then(data => {
+            if (!data.success) {
+                showToast('❌ ' + data.error);
+                return;
+            }
+
+            if (data.gameState) {
+                gameState = data.gameState;
+                lastStateHash = JSON.stringify(gameState);
+                renderBoard();
+                updateUI();
+            }
+
+            skipBtn.disabled = true;
+            showToast('⏭️ Skipping dare...');
+
+            squareDetailsContent.innerHTML = `
+        <div class="empty-state">
+          <div class="big-icon">⏭️</div>
+          <p>Dare was skipped</p>
+          <p class="sub-text">Click a new square</p>
+        </div>
+      `;
+            squareNumberDisplay.textContent = '—';
+        })
+        .catch(err => {
+            showToast('❌ Error: ' + err.message);
+        });
 }
 
 // ============================================
@@ -478,6 +500,7 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+// Auto-join from URL
 (function autoJoinFromURL() {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
@@ -490,6 +513,11 @@ document.addEventListener('keydown', (e) => {
     }
 })();
 
-console.log('🔥 LDR Spicy Game - Pick & Play Mode loaded!');
+// Clean up polling on page unload
+window.addEventListener('beforeunload', () => {
+    stopPolling();
+});
+
+console.log('🔥 LDR Spicy Game - HTTP Polling Mode loaded!');
 console.log('❤️ Have fun and be safe!');
 console.log('🎯 Click any square to reveal a dare!');

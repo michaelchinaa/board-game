@@ -1,6 +1,4 @@
 const express = require('express');
-const { createServer } = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
@@ -9,31 +7,6 @@ const fs = require('fs');
 const SpicyLDRGame = require('../gamelogic');
 
 const app = express();
-const server = createServer(app);
-
-// Socket.IO with Vercel compatible settings
-const io = new Server(server, {
- cors: {
-  origin: "*",
-  methods: ["GET", "POST"],
-  credentials: true
- },
- // Use ONLY polling for Vercel
- transports: ['polling'],
- allowEIO3: true,
- pingTimeout: 60000,
- pingInterval: 25000,
- cookie: false,
- path: '/socket.io',
- allowUpgrades: false,
- upgrade: false,
- perMessageDeflate: false,
- httpCompression: false,
- // Add this to fix Vercel
- serveClient: false,
- // Add this for better compatibility
- allowEIO3: true
-});
 
 app.use(cors({
  origin: "*",
@@ -57,19 +30,20 @@ try {
  console.error('Error loading dares:', error);
 }
 
+// Store games in memory
 const games = {};
-const playerSessions = {};
+const gamePolling = {}; // Track last poll time per game
 
 // Health check
 app.get('/api/health', (req, res) => {
  res.json({
   status: 'OK',
   games: Object.keys(games).length,
-  connections: Object.keys(playerSessions).length
+  timestamp: Date.now()
  });
 });
 
-// API Routes
+// Create game
 app.get('/api/create-game/:playerName', (req, res) => {
  try {
   const roomId = uuidv4().substring(0, 6).toUpperCase();
@@ -78,6 +52,7 @@ app.get('/api/create-game/:playerName', (req, res) => {
 
   const game = new SpicyLDRGame(roomId, playerId, playerName);
   games[roomId] = game;
+  gamePolling[roomId] = { lastPoll: Date.now(), clients: {} };
 
   console.log(`✅ Game created: ${roomId} by ${playerName}`);
 
@@ -94,6 +69,7 @@ app.get('/api/create-game/:playerName', (req, res) => {
  }
 });
 
+// Join game
 app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  try {
   const roomId = req.params.roomId.toUpperCase();
@@ -117,11 +93,23 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
 
   console.log(`✅ Player ${playerName} joined room ${roomId}`);
 
+  // Check if both players are ready
+  const playerIds = Object.keys(game.players);
+  if (playerIds.length === 2) {
+   playerIds.forEach(id => {
+    game.setPlayerReady(id);
+   });
+   game.status = 'PLAYING';
+   game.currentTurn = playerIds[0];
+   console.log(`🎯 Game ${roomId} is now PLAYING!`);
+  }
+
   res.json({
    success: true,
    roomId,
    playerId,
    playerName,
+   gameState: game.getGameState(),
    message: `Joined game: ${roomId}`
   });
  } catch (error) {
@@ -130,119 +118,136 @@ app.get('/api/join-game/:roomId/:playerName', (req, res) => {
  }
 });
 
-// Socket.IO Events
-io.on('connection', (socket) => {
- console.log(`🔌 Client connected: ${socket.id}`);
+// Poll for game state (LONG POLLING)
+app.get('/api/poll/:roomId/:playerId', (req, res) => {
+ try {
+  const roomId = req.params.roomId.toUpperCase();
+  const playerId = req.params.playerId;
+  const lastState = req.query.lastState || '0';
 
- socket.emit('connected', {
-  message: 'Connected to server!',
-  socketId: socket.id
- });
-
- socket.on('join-room', ({ roomId, playerId }) => {
-  const room = roomId.toUpperCase();
-  const game = games[room];
-
-  console.log(`📥 Join room request: ${room} from ${playerId}`);
-
+  const game = games[roomId];
   if (!game) {
-   socket.emit('error', 'Game not found');
-   return;
+   return res.status(404).json({ success: false, error: 'Game not found' });
   }
 
   const player = game.players[playerId];
   if (!player) {
-   socket.emit('error', 'Player not found');
-   return;
+   return res.status(404).json({ success: false, error: 'Player not found' });
   }
 
-  // Leave any previous rooms
-  const rooms = Array.from(socket.rooms);
-  rooms.forEach(r => {
-   if (r !== socket.id) {
-    socket.leave(r);
-   }
-  });
-
-  socket.join(room);
-  socket.data.roomId = room;
-  socket.data.playerId = playerId;
-  playerSessions[socket.id] = { roomId: room, playerId };
-
+  // Mark player as connected
   player.isConnected = true;
 
-  console.log(`✅ ${player.name} joined room ${room}`);
-
-  socket.emit('game-state', game.getGameState());
-  io.to(room).emit('game-state', game.getGameState());
-
-  socket.to(room).emit('player-joined', {
-   playerId,
-   playerName: player.name,
-   message: `${player.name} has joined!`
-  });
-
-  const playerIds = Object.keys(game.players);
-  if (playerIds.length === 2) {
-   console.log(`🎮 Room ${room} has both players!`);
-
-   playerIds.forEach(id => {
-    game.setPlayerReady(id);
-   });
-
-   game.status = 'PLAYING';
-   game.currentTurn = playerIds[0];
-
-   console.log(`🎯 Game ${room} is now PLAYING! First turn: ${game.players[playerIds[0]].name}`);
-
-   io.to(room).emit('game-state', game.getGameState());
-   io.to(room).emit('game-ready', {
-    message: 'Both players are ready! Click any square to start! 🎉'
-   });
+  // Update polling tracking
+  if (!gamePolling[roomId]) {
+   gamePolling[roomId] = { lastPoll: Date.now(), clients: {} };
   }
- });
+  gamePolling[roomId].clients[playerId] = Date.now();
+  gamePolling[roomId].lastPoll = Date.now();
 
- socket.on('select-square', ({ squareIndex }) => {
-  const { roomId, playerId } = socket.data;
-  const game = games[roomId];
+  // Get current game state
+  const currentState = game.getGameState();
+  const stateHash = JSON.stringify(currentState);
 
-  if (!game) {
-   socket.emit('error', 'Game not found');
+  // If state hasn't changed, hold the connection (long polling)
+  if (stateHash === lastState) {
+   // Wait up to 30 seconds for changes
+   const timeout = setTimeout(() => {
+    // Send current state (no changes)
+    res.json({
+     success: true,
+     gameState: currentState,
+     hasChanges: false,
+     timestamp: Date.now()
+    });
+   }, 30000);
+
+   // Store the response object for later
+   if (!gamePolling[roomId].pendingResponses) {
+    gamePolling[roomId].pendingResponses = {};
+   }
+   gamePolling[roomId].pendingResponses[playerId] = { res, timeout };
+
    return;
   }
 
-  console.log(`📍 ${game.players[playerId]?.name} selected square ${squareIndex + 1}`);
+  // State changed, send immediately
+  res.json({
+   success: true,
+   gameState: currentState,
+   hasChanges: true,
+   timestamp: Date.now()
+  });
+
+ } catch (error) {
+  console.error('Error polling game:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
+});
+
+// Select square
+app.post('/api/select-square/:roomId', (req, res) => {
+ try {
+  const roomId = req.params.roomId.toUpperCase();
+  const { playerId, squareIndex } = req.body;
+
+  const game = games[roomId];
+  if (!game) {
+   return res.status(404).json({ success: false, error: 'Game not found' });
+  }
 
   const result = game.selectSquare(playerId, squareIndex);
 
   if (result.error) {
-   socket.emit('error', result.error);
-   return;
+   return res.status(400).json({ success: false, error: result.error });
   }
 
-  io.to(roomId).emit('game-state', game.getGameState());
-  io.to(roomId).emit('square-selected', {
-   playerId,
-   playerName: game.players[playerId].name,
-   squareIndex,
-   dare: result.dare,
-   remaining: result.remaining
-  });
-
-  if (result.gameOver) {
-   io.to(roomId).emit('game-finished', {
-    message: 'All squares have been used! Game Over! 🎉'
+  // Resolve any pending polls for this room
+  if (gamePolling[roomId] && gamePolling[roomId].pendingResponses) {
+   const pending = gamePolling[roomId].pendingResponses;
+   Object.keys(pending).forEach(pid => {
+    const { res: pendingRes, timeout } = pending[pid];
+    if (pendingRes && !pendingRes.headersSent) {
+     clearTimeout(timeout);
+     pendingRes.json({
+      success: true,
+      gameState: game.getGameState(),
+      hasChanges: true,
+      timestamp: Date.now()
+     });
+    }
+    delete pending[pid];
    });
   }
- });
 
- socket.on('skip-dare', () => {
-  const { roomId, playerId } = socket.data;
+  // Check if game is over
+  const gameOver = game.usedSquares.size >= game.totalSquares;
+  if (gameOver) {
+   game.status = 'FINISHED';
+  }
+
+  res.json({
+   success: true,
+   result,
+   gameState: game.getGameState(),
+   gameOver
+  });
+
+ } catch (error) {
+  console.error('Error selecting square:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
+});
+
+// Skip dare
+app.post('/api/skip-dare/:roomId', (req, res) => {
+ try {
+  const roomId = req.params.roomId.toUpperCase();
+  const { playerId } = req.body;
+
   const game = games[roomId];
-
   if (!game) {
-   socket.emit('error', 'Game not found');
-   return;
+   return res.status(404).json({ success: false, error: 'Game not found' });
   }
 
   const player = game.players[playerId];
@@ -255,37 +260,84 @@ io.on('connection', (socket) => {
   game.currentTurn = playerIds[(currentIndex + 1) % playerIds.length];
   game.currentDare = null;
 
-  io.to(roomId).emit('game-state', game.getGameState());
-  io.to(roomId).emit('dare-skipped', {
-   playerId,
-   playerName: player.name,
-   message: `${player.name} skipped the dare!`
-  });
- });
-
- socket.on('disconnect', () => {
-  console.log(`🔌 Client disconnected: ${socket.id}`);
-
-  if (playerSessions[socket.id]) {
-   const { roomId, playerId } = playerSessions[socket.id];
-   const game = games[roomId];
-
-   if (game && game.players[playerId]) {
-    game.players[playerId].isConnected = false;
-
-    io.to(roomId).emit('player-disconnected', {
-     playerId,
-     playerName: game.players[playerId].name,
-     message: `${game.players[playerId].name} has disconnected`
-    });
-
-    io.to(roomId).emit('game-state', game.getGameState());
-   }
-
-   delete playerSessions[socket.id];
+  // Resolve any pending polls
+  if (gamePolling[roomId] && gamePolling[roomId].pendingResponses) {
+   const pending = gamePolling[roomId].pendingResponses;
+   Object.keys(pending).forEach(pid => {
+    const { res: pendingRes, timeout } = pending[pid];
+    if (pendingRes && !pendingRes.headersSent) {
+     clearTimeout(timeout);
+     pendingRes.json({
+      success: true,
+      gameState: game.getGameState(),
+      hasChanges: true,
+      timestamp: Date.now()
+     });
+    }
+    delete pending[pid];
+   });
   }
- });
+
+  res.json({
+   success: true,
+   gameState: game.getGameState()
+  });
+
+ } catch (error) {
+  console.error('Error skipping dare:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
 });
 
-// Export for Vercel
-module.exports = server;
+// Get game state (fallback)
+app.get('/api/state/:roomId/:playerId', (req, res) => {
+ try {
+  const roomId = req.params.roomId.toUpperCase();
+  const playerId = req.params.playerId;
+
+  const game = games[roomId];
+  if (!game) {
+   return res.status(404).json({ success: false, error: 'Game not found' });
+  }
+
+  const player = game.players[playerId];
+  if (!player) {
+   return res.status(404).json({ success: false, error: 'Player not found' });
+  }
+
+  player.isConnected = true;
+
+  res.json({
+   success: true,
+   gameState: game.getGameState()
+  });
+
+ } catch (error) {
+  console.error('Error getting state:', error);
+  res.status(500).json({ success: false, error: error.message });
+ }
+});
+
+// Cleanup inactive games (runs every 5 minutes)
+setInterval(() => {
+ const now = Date.now();
+ Object.keys(gamePolling).forEach(roomId => {
+  const polling = gamePolling[roomId];
+  if (polling && (now - polling.lastPoll) > 300000) { // 5 minutes
+   // Clean up pending responses
+   if (polling.pendingResponses) {
+    Object.keys(polling.pendingResponses).forEach(pid => {
+     const { res, timeout } = polling.pendingResponses[pid];
+     if (res && !res.headersSent) {
+      clearTimeout(timeout);
+      res.status(408).json({ success: false, error: 'Timeout' });
+     }
+     delete polling.pendingResponses[pid];
+    });
+   }
+   delete gamePolling[roomId];
+  }
+ });
+}, 300000);
+
+module.exports = app;
