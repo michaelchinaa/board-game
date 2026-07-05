@@ -6,33 +6,40 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 
-// Import game logic
 const SpicyLDRGame = require('../gamelogic');
 
 const app = express();
 const server = createServer(app);
 
+// Configure Socket.IO for Vercel
 const io = new Server(server, {
  cors: {
   origin: "*",
   methods: ["GET", "POST"],
   credentials: true
  },
- transports: ['polling'], // Only polling for Vercel
+ transports: ['polling'],
  allowEIO3: true,
  pingTimeout: 60000,
- pingInterval: 25000
+ pingInterval: 25000,
+ cookie: false,
+ path: '/socket.io',
+ // Add these for better compatibility
+ allowUpgrades: false,
+ upgrade: false
 });
 
 app.use(cors());
 app.use(express.json());
-
-// Serve static files from public folder
 app.use(express.static(path.join(__dirname, '../public')));
 
 // Health check
 app.get('/api/health', (req, res) => {
- res.json({ status: 'OK' });
+ res.json({
+  status: 'OK',
+  games: Object.keys(games).length,
+  connections: Object.keys(playerSessions).length
+ });
 });
 
 // Load dares
@@ -48,7 +55,6 @@ try {
  console.error('Error loading dares:', error);
 }
 
-// Store games in memory (note: resets on cold starts)
 const games = {};
 const playerSessions = {};
 

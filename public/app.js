@@ -110,46 +110,112 @@ function initializeSocket() {
         socket = null;
     }
 
-    // For Vercel - Force polling only with longer timeouts
+    // For Vercel - polling only
     socket = io({
-        transports: ['polling'],
+        transports: ['polling'],  // Only polling for Vercel
         upgrade: false,
         reconnection: true,
-        reconnectionAttempts: 20,
+        reconnectionAttempts: 10,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        timeout: 60000,  // Increase timeout
-        autoConnect: true,
-        forceNew: true,
-        path: '/socket.io'  // Explicit path
+        timeout: 20000,
+        autoConnect: true
     });
 
     socket.on('connect', () => {
         console.log('✅ Connected to server!');
         showToast('✅ Connected to server!');
-        // Re-join room if we have roomId and playerId
-        if (roomId && playerId) {
-            socket.emit('join-room', { roomId, playerId });
-        }
+        socket.emit('join-room', { roomId, playerId });
     });
 
-    // Add this to debug connection issues
+    socket.on('connected', (data) => {
+        console.log('📨 Server confirmed connection:', data);
+    });
+
     socket.on('connect_error', (error) => {
         console.error('❌ Connection error:', error);
-        showToast(`⏳ Reconnecting... (${error.message})`);
+        showToast(`⏳ Reconnecting...`);
     });
 
-    // Add this to debug disconnections
     socket.on('disconnect', (reason) => {
         console.log('🔌 Disconnected:', reason);
         if (reason === 'io server disconnect') {
-            // Reconnect manually if server disconnected us
             socket.connect();
         }
         showToast('⚠️ Disconnected. Reconnecting...');
     });
 
+    socket.on('reconnect', () => {
+        console.log('🔄 Reconnected!');
+        showToast('✅ Reconnected!');
+        socket.emit('join-room', { roomId, playerId });
+    });
 
+    socket.on('game-state', (state) => {
+        console.log('📊 Game state updated');
+        console.log('Status:', state.status);
+        console.log('Current turn:', state.currentTurnName);
+        console.log('Used squares:', state.usedSquares);
+        gameState = state;
+        renderBoard();
+        updateUI();
+    });
+
+    socket.on('player-joined', (data) => {
+        addHistory(`👋 ${data.message}`);
+        showToast(`👋 ${data.playerName} joined!`);
+        statusInfo.textContent = '🎉 Partner joined! Starting game...';
+    });
+
+    socket.on('game-ready', (data) => {
+        addHistory(`🎉 ${data.message}`);
+        showToast(`🎉 ${data.message}`);
+        statusInfo.textContent = '🎯 Click any square to start!';
+        setTimeout(() => {
+            renderBoard();
+        }, 100);
+    });
+
+    socket.on('player-disconnected', (data) => {
+        addHistory(`⚠️ ${data.message}`);
+        showToast(`⚠️ ${data.message}`);
+        statusInfo.textContent = '⏳ Waiting for player...';
+        renderBoard();
+    });
+
+    socket.on('square-selected', (data) => {
+        console.log('📍 Square selected:', data);
+        addHistory(`📍 ${data.playerName} picked square ${data.squareIndex + 1}`);
+        showToast(`📍 ${data.playerName} picked a square!`);
+        displaySquareDetails(data.squareIndex, data.dare, data.playerName);
+        usedSquaresDisplay.textContent = gameState?.usedSquares?.length || 0;
+    });
+
+    socket.on('dare-skipped', (data) => {
+        addHistory(`⏭️ ${data.message}`);
+        showToast(`⏭️ ${data.message}`);
+        squareDetailsContent.innerHTML = `
+            <div class="empty-state">
+                <div class="big-icon">⏭️</div>
+                <p>Dare was skipped</p>
+                <p class="sub-text">Click a new square</p>
+            </div>
+        `;
+        squareNumberDisplay.textContent = '—';
+    });
+
+    socket.on('game-finished', (data) => {
+        addHistory(`🏆 ${data.message}`);
+        showToast(`🏆 ${data.message}`);
+        statusInfo.textContent = '🏆 Game Finished! Great job! 🎉';
+        skipBtn.disabled = true;
+        renderBoard();
+    });
+
+    socket.on('error', (message) => {
+        console.error('❌ Server error:', message);
+        showToast('❌ ' + message);
+    });
 }
 
 // ============================================
