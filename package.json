@@ -1,0 +1,19 @@
+{
+  "name": "ldr-spicy-game",
+  "version": "1.0.0",
+  "description": "LDR Spicy Game - Pick & Play",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node server-local.js",
+    "dev": "nodemon server-local.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
